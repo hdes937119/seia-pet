@@ -23,6 +23,8 @@ import { SettingsPanel, type ExploreStatus, type SettingsTab } from './component
 import { useIdleExplorer } from './hooks/useIdleExplorer';
 import { useServerEvents } from './hooks/useServerEvents';
 import { pickPatReaction } from './utils/patReactions';
+import { getClientTime } from './utils/clientTime';
+import { useCompanionGreeting, type GreetingReason } from './hooks/useCompanionGreeting';
 import { useAvatarAppearance } from './hooks/useAvatarAppearance';
 import { useClickThrough } from './hooks/useClickThrough';
 import { ScreenVisionTracker } from './components/ScreenVisionTracker';
@@ -149,7 +151,13 @@ export default function App() {
 
   // 自主網路探索
   const [exploreSettings, setExploreSettings] = useState<ExploreSettings>(() => {
-    const defaults: ExploreSettings = { enabled: true, idleMinutes: 15, petInterests: '' };
+    const defaults: ExploreSettings = {
+      enabled: true,
+      idleMinutes: 15,
+      petInterests: '',
+      greetOnReturn: true,
+      lateNightReminder: true,
+    };
     try {
       const saved = localStorage.getItem(STORAGE_KEY_EXPLORE);
       return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
@@ -336,6 +344,7 @@ export default function App() {
           currentActivity: currentActivity
             ? {
               type: currentActivity.category,
+              appContext: currentActivity.appContext,
               title: currentActivity.title,
               observation: currentActivity.observation,
             }
@@ -343,6 +352,7 @@ export default function App() {
           latestScreenshot: currentActivity?.screenshotUrl,
           latestScreenshotAt: currentActivity?.capturedAt,
           preferredModel,
+          clientTime: getClientTime(),
         },
         controller.signal,
         (delta) => {
@@ -548,6 +558,56 @@ export default function App() {
     enabled: exploreSettings.enabled,
     idleMinutes: exploreSettings.idleMinutes,
     onIdle: () => requestExplore('idle'),
+  });
+
+  // 主動打招呼：開啟桌寵 / 離開回來 / 深夜提醒（像朋友注意到你來了）
+  const requestGreeting = async (reason: GreetingReason, awayMinutes: number, awaySince: number) => {
+    // 主人正在等回覆或在講話時，不要插話
+    if (isWaitingRef.current || voiceInput.state !== 'idle') return;
+    try {
+      // 主人不在時貓貓自己找到的東西（探索結果的 id 是 disc_時間戳）
+      const foundWhileAway = videos
+        .filter((v) => v.id.startsWith('disc_') && Number(v.id.slice(5)) >= awaySince)
+        .map((v) => ({ title: v.title, sourceLabel: v.sourceLabel || '' }));
+      const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+      const res = await fetch('/api/greeting', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reason,
+          awayMinutes,
+          clientTime: getClientTime(),
+          personality,
+          discoveries: foundWhileAway,
+          lastTopic: lastUserMsg?.content,
+          currentActivity: currentActivity ? { title: currentActivity.title } : undefined,
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.text) return;
+      if (isWaitingRef.current) return; // 等回應期間主人開始聊天了 → 不插話
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `msg_greet_${Date.now()}`,
+          role: 'pet',
+          content: data.text,
+          timestamp: new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
+          isRead: true,
+        },
+      ]);
+      triggerSpeak(data.text);
+      pet.triggerEmotion(data.emotion);
+    } catch (err) {
+      console.warn('Greeting error:', err);
+    }
+  };
+
+  useCompanionGreeting({
+    greetOnReturn: exploreSettings.greetOnReturn,
+    lateNightReminder: exploreSettings.lateNightReminder,
+    onGreet: (reason, awayMinutes, awaySince) => requestGreeting(reason, awayMinutes, awaySince),
   });
 
   // 5. Ask Twin Cat about a specific discovered video in chat

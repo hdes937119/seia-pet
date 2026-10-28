@@ -73,7 +73,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
     ['model', '模型', <Cpu key="c" className="w-3.5 h-3.5" />],
     ['screen', '偵測', <Monitor key="m" className="w-3.5 h-3.5" />],
     ['persona', '個性', <Sliders key="s" className="w-3.5 h-3.5" />],
-    ['explore', '探索', <Compass key="e" className="w-3.5 h-3.5" />],
+    ['explore', '主動', <Compass key="e" className="w-3.5 h-3.5" />],
   ];
   const ex = props.exploreSettings;
   const setEx = (patch: Partial<ExploreSettings>) => props.onExploreSettingsChange({ ...ex, ...patch });
@@ -208,8 +208,35 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
         {/* 個性 */}
         <div className={tab === 'persona' ? '' : 'hidden'}>{props.personalityTuner}</div>
 
-        {/* 自主網路探索 */}
+        {/* 主動互動：打招呼 + 自主網路探索 */}
         <div className={tab === 'explore' ? 'space-y-3' : 'hidden'}>
+          <p className="text-[11px] text-slate-400">陪伴感</p>
+          <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs">
+            <span>
+              👋 回來時打招呼
+              <span className="block text-[10px] text-slate-400 mt-0.5">打開桌寵、或離開電腦 10 分鐘以上回來時，會依時間跟你打招呼</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={ex.greetOnReturn}
+              onChange={(e) => setEx({ greetOnReturn: e.target.checked })}
+              className="w-4 h-4 accent-purple-500 shrink-0"
+            />
+          </label>
+          <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs">
+            <span>
+              🌙 深夜提醒早點睡
+              <span className="block text-[10px] text-slate-400 mt-0.5">凌晨 1~5 點還在用電腦時，一晚提醒一次</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={ex.lateNightReminder}
+              onChange={(e) => setEx({ lateNightReminder: e.target.checked })}
+              className="w-4 h-4 accent-purple-500 shrink-0"
+            />
+          </label>
+
+          <p className="text-[11px] text-slate-400 pt-1">自主網路探索</p>
           <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs">
             <span>
               🧭 閒置時自動上網探索

@@ -16,6 +16,11 @@ import {
   XCircle,
 } from 'lucide-react';
 import { ScreenActivity, PersonalityConfig, MemoryKeyword, GeminiModelOption } from '../types';
+import { getClientTime } from '../utils/clientTime';
+
+const GAME_COOLDOWN_KEY = 'gemini_twin_cat_game_cooldown';
+const isGamingActivity = (a: ScreenActivity | null) =>
+  a?.category === 'gaming' || a?.appContext === 'gaming';
 
 interface ScreenVisionTrackerProps {
   personality: PersonalityConfig;
@@ -44,6 +49,22 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   // Default minimum cooldown after first trigger: 300 seconds (5 minutes)
   const [cooldownSec, setCooldownSec] = useState<number>(300);
+  // 打遊戲時當遊戲夥伴：聊得比較勤（預設 2 分鐘），可以另外設定
+  const [gameCooldownSec, setGameCooldownSec] = useState<number>(() => {
+    try {
+      return Number(localStorage.getItem(GAME_COOLDOWN_KEY)) || 120;
+    } catch {
+      return 120;
+    }
+  });
+  const [isGamingNow, setIsGamingNow] = useState(false);
+  useEffect(() => {
+    try {
+      localStorage.setItem(GAME_COOLDOWN_KEY, String(gameCooldownSec));
+    } catch {
+      // ignore
+    }
+  }, [gameCooldownSec]);
   const [remainingCooldownSec, setRemainingCooldownSec] = useState<number>(0);
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -209,6 +230,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
             recentObservation: lastActivityRef.current?.observation,
             scenarioHint,
             preferredModel: preferredModelRef.current,
+            clientTime: getClientTime(),
           }),
           signal: controller.signal,
         });
@@ -241,6 +263,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
 
         lastActivityRef.current = activity;
         setLastActivity(activity);
+        setIsGamingNow(isGamingActivity(activity));
         onActivityDetectedRef.current(activity);
       } catch (err: any) {
         if (err?.name === 'AbortError') {
@@ -272,8 +295,10 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
     const monitorTimer = setInterval(() => {
       if (isAnalyzingRef.current) return;
 
+      // 正在打遊戲 → 用遊戲夥伴的間隔（比較勤），其他畫面維持一般間隔
+      const effectiveCooldown = isGamingActivity(lastActivityRef.current) ? gameCooldownSec : cooldownSec;
       const elapsedSec = Math.floor((Date.now() - lastAnalyzeTimeRef.current) / 1000);
-      const remaining = Math.max(0, cooldownSec - elapsedSec);
+      const remaining = Math.max(0, effectiveCooldown - elapsedSec);
       setRemainingCooldownSec(remaining);
 
       // First time after sharing starts: trigger immediately once video frames are ready
@@ -285,8 +310,8 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
         return;
       }
 
-      // Subsequent triggers: ONLY after minimum 5 minutes (cooldownSec) has elapsed AND screen changed
-      if (elapsedSec >= cooldownSec) {
+      // 之後：冷卻時間到了、而且畫面有變化才觸發
+      if (elapsedSec >= effectiveCooldown) {
         const diff = computeFrameDiff(false);
         if (diff >= 10) {
           const frame = captureFrame();
@@ -298,7 +323,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
     }, 2000);
 
     return () => clearInterval(monitorTimer);
-  }, [stream, isAutoTracking, cooldownSec, computeFrameDiff, captureFrame, analyzeScreenshot]);
+  }, [stream, isAutoTracking, cooldownSec, gameCooldownSec, computeFrameDiff, captureFrame, analyzeScreenshot]);
 
   // Listen for global Ctrl+V image paste
   useEffect(() => {
@@ -645,10 +670,23 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
               value={cooldownSec}
               onChange={(e) => setCooldownSec(Number(e.target.value))}
               className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-slate-200"
+              title="一般畫面（看影片、工作…）多久最多聊一次"
             >
-              <option value={300}>最短每 5 分鐘觸發</option>
-              <option value={600}>最短每 10 分鐘觸發</option>
-              <option value={900}>最短每 15 分鐘觸發</option>
+              <option value={300}>一般：每 5 分鐘</option>
+              <option value={600}>一般：每 10 分鐘</option>
+              <option value={900}>一般：每 15 分鐘</option>
+            </select>
+            <select
+              value={gameCooldownSec}
+              onChange={(e) => setGameCooldownSec(Number(e.target.value))}
+              className={`border rounded px-1.5 py-0.5 text-[10px] ${
+                isGamingNow ? 'bg-rose-950/70 border-rose-500/60 text-rose-100' : 'bg-slate-900 border-slate-700 text-slate-200'
+              }`}
+              title="打遊戲時當遊戲夥伴，多久最多聊一次遊戲內容（越短越熱鬧，也越耗 Gemini 額度）"
+            >
+              <option value={60}>🎮 遊戲：每 1 分鐘</option>
+              <option value={120}>🎮 遊戲：每 2 分鐘</option>
+              <option value={300}>🎮 遊戲：每 5 分鐘</option>
             </select>
           </div>
         </div>

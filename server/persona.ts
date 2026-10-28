@@ -12,6 +12,31 @@ export interface PersonalityConfig {
   customPrompt?: string; // 今日特調
 }
 
+/** 前端送來的主人當地時間（伺服器時區不一定跟主人一樣，所以由前端提供） */
+export interface ClientTime {
+  label?: string; // 例如「星期三 晚上 11:42」
+  hour?: number; // 0~23
+}
+
+/** 時間感：給所有會說話的提示詞一行「現在幾點」，讓她知道早安 / 吃飯 / 該睡了 */
+export function describeTime(t?: ClientTime): string {
+  if (!t?.label) return '';
+  const h = typeof t.hour === 'number' ? t.hour : -1;
+  const hint =
+    h >= 0 && h < 5
+      ? '（已經是深夜了）'
+      : h >= 5 && h < 10
+        ? '（早上）'
+        : h >= 11 && h < 14
+          ? '（午餐時間附近）'
+          : h >= 17 && h < 20
+            ? '（晚餐時間附近）'
+            : h >= 23
+              ? '（很晚了）'
+              : '';
+  return `【現在時間】：${t.label}${hint}（主人的當地時間，聊天時可以自然地意識到時間，但不用每次都提）`;
+}
+
 const level = (v: number | undefined, fallback = 50) => {
   const n = typeof v === 'number' && Number.isFinite(v) ? v : fallback;
   return n > 70 ? 'high' : n < 30 ? 'low' : 'mid';

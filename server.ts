@@ -6,7 +6,11 @@ import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import dotenv from 'dotenv';
 import { runAutoExplore, type GenerateJson } from './server/explore';
-import { describePersonality, type PersonalityConfig } from './server/persona';
+import { describePersonality, describeTime, type ClientTime, type PersonalityConfig } from './server/persona';
+
+function isGamingActivity(a?: { type?: string; appContext?: string } | null): boolean {
+  return a?.type === 'gaming' || a?.appContext === 'gaming';
+}
 
 dotenv.config();
 
@@ -264,9 +268,11 @@ function buildSystemPrompt(
   personality: PersonalityConfig,
   permanentMemories: Array<{ keyword: string; category: string; notes?: string }> = [],
   activeKeywords: Array<{ keyword: string; strength: number }> = [],
-  currentActivity?: { type: string; title: string; observation?: string }
+  currentActivity?: { type: string; title: string; observation?: string; appContext?: string },
+  clientTime?: ClientTime
 ) {
   const persona = describePersonality(personality);
+  const timeLine = describeTime(clientTime);
 
   // 🌟 升級版記憶群組化：將長期記憶按 Category 分類整理，避免大腦混淆
   let memoryContext = '';
@@ -289,13 +295,18 @@ function buildSystemPrompt(
       ? `【最近對話頻繁提及的焦點】：` + activeKeywords.map((k) => `${k.keyword}`).join('、')
       : '';
 
-  const activityContext = currentActivity
-    ? `【背景參考（主人目前螢幕視窗為「${currentActivity.title}」，僅在主人主動問起畫面或相關話題時才引用，平時請專心回應主人的話！）】：${currentActivity.observation || ''}`
-    : '';
+  // 主人在打遊戲時，她是一起玩的朋友：可以自然地聊遊戲裡正在發生的事；其他情況則只在被問起時才提畫面
+  const activityContext = !currentActivity
+    ? ''
+    : isGamingActivity(currentActivity)
+      ? `【主人正在玩遊戲：「${currentActivity.title}」】：${currentActivity.observation || ''}
+你是陪主人一起玩的遊戲夥伴：可以自然地聊遊戲裡正在發生的事（關卡、Boss、角色、裝備、剛剛的操作），即時加油、吐槽或給一個小建議；主人在打遊戲，回覆要短（1~2句）、好讀。`
+      : `【背景參考（主人目前螢幕視窗為「${currentActivity.title}」，僅在主人主動問起畫面或相關話題時才引用，平時請專心回應主人的話！）】：${currentActivity.observation || ''}`;
 
   return `你是 Google Gemini 擬人化日系二次元桌寵貓娘「雙子星貓」。
 【微性格】：${persona.traits}
 【說話語氣】：${persona.toneRule}
+${timeLine}
 ${memoryContext}
 ${recentKeywordsContext}
 ${activityContext}
@@ -316,7 +327,8 @@ const SCREEN_QUESTION_RE = /畫面|螢幕|影片|視窗|字幕|這部|這段|這
 function normalizeChatContents(
   messages: Array<{ role: string; content: string }>,
   latestScreenshot?: string,
-  latestScreenshotAt?: number
+  latestScreenshotAt?: number,
+  isGaming = false
 ) {
   const normalized: Array<{ role: 'user' | 'model'; parts: Array<any> }> = [];
 
@@ -361,10 +373,10 @@ function normalizeChatContents(
     normalized.push({ role: 'user', parts: [{ text: '繼續聊聊吧～' }] });
   }
 
-  // Only attach the screenshot image when the user's latest message asks about the screen/video
+  // 附上截圖的時機：主人問到畫面時；或主人正在打遊戲（「這王怎麼打」這類問題通常不會提到「畫面」兩個字）
   const lastTurn = normalized[normalized.length - 1];
   const lastUserText = lastTurn?.parts?.[0]?.text || '';
-  const asksAboutScreen = SCREEN_QUESTION_RE.test(lastUserText);
+  const asksAboutScreen = isGaming || SCREEN_QUESTION_RE.test(lastUserText);
   const isFresh =
     typeof latestScreenshotAt === 'number' &&
     Date.now() - latestScreenshotAt <= SCREENSHOT_MAX_AGE_MS;
@@ -417,6 +429,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       latestScreenshot,
       latestScreenshotAt,
       preferredModel,
+      clientTime,
     } = req.body;
 
     const ai = getAiClient();
@@ -428,12 +441,14 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       personality || { sharpTongue: 50, chatty: 60, humorous: 70, tsundere: 60 },
       permanentMemories || [],
       activeKeywords || [],
-      currentActivity
+      currentActivity,
+      clientTime
     );
     const formattedContents = normalizeChatContents(
       messages || [],
       latestScreenshot,
-      latestScreenshotAt
+      latestScreenshotAt,
+      isGamingActivity(currentActivity)
     );
 
     const filter = createKeywordFilter();
@@ -492,6 +507,7 @@ app.post('/api/vision-track', async (req: Request, res: Response) => {
       recentObservation,
       scenarioHint,
       preferredModel,
+      clientTime,
     } = req.body;
 
     if (!screenshot) {
@@ -507,11 +523,18 @@ app.post('/api/vision-track', async (req: Request, res: Response) => {
     const visionPrompt = `你是生活在主人電腦上的日系二次元桌寵貓娘「星穹領航員·雙子星貓」。
 【你的性格】：${persona.traits}
 【說話語氣】：${persona.toneRule}
+${describeTime(clientTime)}
 請仔細觀看這張主人目前的真實電腦螢幕畫面截圖！
 ${recentActivity ? `【上一刻的畫面是】：標題「${recentActivity}」(${recentObservation || ''})。如果現在畫面中的影片、字幕、人物、場景或視窗跟上一刻不同，請務必指出畫面換成了什麼新內容！` : ''}
 ${scenarioHint ? `【場景提示】：${scenarioHint}` : ''}
 
 請仔細辨識畫面中的【具體文字、影片標題、字幕台詞、人物造型與動作、遊戲UI或聊天內容】，嚴格禁止說空泛套話！你的搭話必須直接提及你在這張圖裡真正看到的細節（例如讀出畫面上的字幕、說出畫面人物的動作或正在播放的具體題材）。
+
+【如果畫面是遊戲】你是坐在主人旁邊一起玩的朋友：
+- 針對畫面上「正在發生的事」即時反應：Boss 戰、血量危急、死亡畫面、升級、拿到寶物、新地圖、選單或對話劇情
+- 可以加油、吐槽剛剛的操作、或給「一個」具體的小建議（例如閃避時機、該喝水了、這件裝備的詞綴不錯）
+- 主人正在專心打，catComment 要短（1~2句、30字內），一看就懂，不要長篇大論
+${recentActivity ? '- 跟上一刻比較：如果是同一場戰鬥/同一關，就接續剛才的話題（例如「又死了？第幾次了」「快贏了！」），不要每次都重新介紹遊戲' : ''}
 
 請嚴格只輸出以下 JSON 格式：
 {
@@ -519,7 +542,7 @@ ${scenarioHint ? `【場景提示】：${scenarioHint}` : ''}
   "appContext": "gaming"（正在玩遊戲） | "gemini_web"（瀏覽器開著 Google Gemini 網頁） | "line"（LINE 桌面版或網頁版視窗） | "other"（其他）,
   "activityTitle": "從畫面讀出的具體影片名稱/視窗標題/字幕主題（15字內）",
   "observation": "詳細描述你在畫面中看到的具體人物、動作、場景與文字字幕（40字內）",
-  "catComment": "完全依照上面的【說話語氣】，直接針對這張畫面裡的具體內容主動跟主人搭話（2~3句話，約35~65字，${persona.lengthHint}，要講出畫面細節，絕對不要固定台詞！）"
+  "catComment": "完全依照上面的【說話語氣】，直接針對這張畫面裡的具體內容主動跟主人搭話（一般畫面 2~3句、約35~65字；遊戲畫面 1~2句、30字內。${persona.lengthHint}，要講出畫面細節，絕對不要固定台詞！）"
 }`;
 
     const ai = getAiClient();
@@ -753,6 +776,80 @@ app.post('/api/auto-explore', async (req: Request, res: Response) => {
 });
 
 
+
+// 7. 主動打招呼（陪伴感）：開啟桌寵 / 主人離開一陣子回來 / 深夜還在用電腦
+app.post('/api/greeting', async (req: Request, res: Response) => {
+  try {
+    const {
+      reason, // 'startup' | 'return' | 'late_night'
+      awayMinutes,
+      clientTime,
+      personality,
+      discoveries, // 主人不在時貓貓找到的東西 [{ title, sourceLabel }]
+      lastTopic, // 上次聊到的話（主人說的最後一句）
+      currentActivity,
+    } = req.body || {};
+    const ai = getAiClient();
+    if (!ai) return res.status(500).json({ error: 'Missing GEMINI_API_KEY' });
+
+    const persona = describePersonality(personality);
+    const away = Number(awayMinutes) || 0;
+    const awayText =
+      away >= 60 * 24
+        ? `大約 ${Math.round(away / 60 / 24)} 天`
+        : away >= 60
+          ? `大約 ${Math.round(away / 60)} 小時`
+          : `大約 ${Math.max(1, Math.round(away))} 分鐘`;
+
+    const situation =
+      reason === 'late_night'
+        ? '主人到了深夜還在用電腦。用你的語氣關心他、提醒他早點休息（不要說教，像朋友那樣；如果他在打遊戲可以說「打完這場就去睡」）。'
+        : reason === 'startup'
+          ? `主人剛打開桌寵，你們上次見面是${awayText}前。像朋友見面一樣打招呼。`
+          : `主人離開電腦${awayText}，剛剛回來了。像朋友看到他回座位一樣打招呼（可以好奇他剛剛去哪、或歡迎他回來）。`;
+
+    const extras = [
+      Array.isArray(discoveries) && discoveries.length > 0
+        ? `你在主人不在的時候自己上網逛到了：${discoveries
+            .slice(0, 3)
+            .map((d: any) => `「${d.title}」(${d.sourceLabel})`)
+            .join('、')}，可以順口提一句（不用全部講）。`
+        : '',
+      lastTopic && reason !== 'late_night'
+        ? `主人上次跟你說的最後一句話是：「${String(lastTopic).slice(0, 80)}」。如果這是一件會有後續的事（例如面試、考試、看醫生、出遊、比賽、截止日），就像朋友一樣直接關心那件事的結果，而且提到那件事時要沿用主人原本的用詞（例如主人說「面試」就說面試，不要換成別的事）；如果只是閒聊就不用提。`
+        : '',
+      currentActivity?.title ? `主人目前螢幕上是：「${currentActivity.title}」。` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const prompt = `你是住在主人電腦上的桌寵貓娘「雙子星貓」，是主人身邊的朋友。
+【你的性格】：${persona.traits}
+【說話語氣】：${persona.toneRule}
+${describeTime(clientTime)}
+
+【現在的情況】：${situation}
+${extras}
+
+要求：像真人朋友一樣自然，依照時間（早上 / 中午 / 晚上 / 深夜）調整內容，例如早上可以說早安、吃飯時間可以問吃了沒。
+只說 1~2 句（40字內，${persona.lengthHint}），不要每次都用同樣的開頭。輸出嚴格 JSON：
+{ "text": "要說的話", "emotion": "happy | hungry | sad | angry | proud | confused | loving 其中一個" }`;
+
+    const { response } = await generateSmartContent(
+      ai,
+      [{ role: 'user', parts: [{ text: prompt }] }],
+      { responseMimeType: 'application/json', temperature: 1.0 },
+      // 打招呼要快：優先用 Flash Lite
+      'gemini-3.1-flash-lite-preview'
+    );
+    const parsed = JSON.parse(cleanJsonText(response.text || '{}')) || {};
+    const emotion = PET_EMOTIONS.includes(parsed.emotion) ? parsed.emotion : 'happy';
+    return res.json({ text: String(parsed.text || '').trim(), emotion });
+  } catch (error: any) {
+    console.warn('[打招呼] 失敗:', error?.status || error?.message);
+    return res.status(502).json({ error: '打招呼失敗' });
+  }
+});
 
 // 6. 語音轉文字（Hands-free STT）：前端錄好 16kHz WAV，交給 Gemini 逐字轉寫
 //    （Electron 不支援 Web Speech API 的 Google 雲端辨識，所以改用 Gemini）

@@ -59,11 +59,13 @@ export interface Discovery {
   discoveredAt: string;
 }
 
-/** 自主探索設定（設定面板「探索」分頁） */
+/** 主動互動設定（設定面板「主動」分頁）：自主探索 + 打招呼 */
 export interface ExploreSettings {
   enabled: boolean;
   idleMinutes: number;
   petInterests: string;
+  greetOnReturn: boolean; // 開啟桌寵 / 離開回來時打招呼
+  lateNightReminder: boolean; // 深夜提醒早點睡
 }
 
 export interface ScreenActivity {
