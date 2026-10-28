@@ -1,20 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import {
-  Sparkles,
-  BookOpen,
-  Film,
-  Volume2,
-  VolumeX,
-  Sliders,
-  Settings2,
-  Monitor,
-  MessageSquare,
-  Heart,
-  ChevronDown,
-  ChevronUp,
-  ExternalLink,
-  Cpu,
-} from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
+import { BookOpen, Film, Volume2, VolumeX, Settings2, Monitor, MessageCircle, Mic } from 'lucide-react';
 import {
   PersonalityConfig,
   MemoryKeyword,
@@ -29,7 +15,11 @@ import { streamChat, createSentenceSplitter } from './services/chatStream';
 import { useVoiceInput } from './hooks/useVoiceInput';
 import { usePetState } from './hooks/usePetState';
 import { memoryDecayService } from './services/memoryDecayService';
-import { TwinCatAvatar } from './components/TwinCatAvatar';
+import { PetStage } from './components/PetStage';
+import { RadialMenu, type RadialMenuItem } from './components/RadialMenu';
+import { SettingsPanel } from './components/SettingsPanel';
+import { useAvatarAppearance } from './hooks/useAvatarAppearance';
+import { useClickThrough } from './hooks/useClickThrough';
 import { ScreenVisionTracker } from './components/ScreenVisionTracker';
 import { PersonalityTuner } from './components/PersonalityTuner';
 import { MemoryNotebookModal } from './components/MemoryNotebookModal';
@@ -136,7 +126,19 @@ export default function App() {
 
   // Modals & Panels
   const [activeModal, setActiveModal] = useState<'none' | 'notebook' | 'videos'>('none');
-  const [showSidePanel, setShowSidePanel] = useState(true);
+
+  // 浮動版面：預設只顯示立繪；左鍵開對話框、右鍵開扇形選單
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [radialMenu, setRadialMenu] = useState<{ open: boolean; x: number; y: number }>({
+    open: false,
+    x: 0,
+    y: 0,
+  });
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'look' | 'model' | 'screen' | 'persona'>('look');
+  const appearance = useAvatarAppearance();
+  const rootRef = useRef<HTMLDivElement>(null);
+  useClickThrough(rootRef);
 
   const bubbleTimeoutRef = useRef<any>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
@@ -464,219 +466,195 @@ export default function App() {
   };
 
   const permanentCount = memories.filter((m) => m.isPermanent).length;
+  const isElectron = typeof window !== 'undefined' && Boolean((window as any).electronAPI);
+
+  const openSettings = (tab: typeof settingsTab) => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+    setIsChatOpen(false);
+  };
+
+  // 右鍵扇形選單的項目
+  const radialItems: RadialMenuItem[] = [
+    {
+      id: 'chat',
+      label: isChatOpen ? '收起對話' : '聊天',
+      icon: <MessageCircle className="w-5 h-5" />,
+      active: isChatOpen,
+      onSelect: () => {
+        setSettingsOpen(false);
+        setIsChatOpen((v) => !v);
+      },
+    },
+    {
+      id: 'voice-input',
+      label: '語音輸入',
+      icon: <Mic className="w-5 h-5" />,
+      active: voiceInput.state === 'listening',
+      onSelect: () => voiceInput.toggle(),
+    },
+    {
+      id: 'videos',
+      label: '摸魚手帳',
+      icon: <Film className="w-5 h-5" />,
+      badge: videos.length,
+      onSelect: () => setActiveModal('videos'),
+    },
+    {
+      id: 'notebook',
+      label: '記憶筆記',
+      icon: <BookOpen className="w-5 h-5" />,
+      badge: permanentCount,
+      onSelect: () => setActiveModal('notebook'),
+    },
+    {
+      id: 'screen',
+      label: '螢幕偵測',
+      icon: <Monitor className="w-5 h-5" />,
+      active: isAutoTracking,
+      onSelect: () => openSettings('screen'),
+    },
+    {
+      id: 'mute',
+      label: voiceEnabled ? '靜音' : '開聲音',
+      icon: voiceEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />,
+      active: !voiceEnabled,
+      onSelect: () => setVoiceEnabled((v) => !v),
+    },
+    {
+      id: 'settings',
+      label: '設定',
+      icon: <Settings2 className="w-5 h-5" />,
+      active: settingsOpen,
+      onSelect: () => (settingsOpen ? setSettingsOpen(false) : openSettings(settingsTab)),
+    },
+  ];
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col antialiased selection:bg-purple-600/30 selection:text-purple-200">
+    <div
+      ref={rootRef}
+      data-passthrough
+      className="fixed inset-0 overflow-hidden text-slate-100 antialiased selection:bg-purple-600/30 selection:text-purple-200"
+      style={{ ['--pet-w' as any]: '220px', ['--pet-h' as any]: '300px' } as React.CSSProperties}
+    >
+      {/* 在一般瀏覽器預覽時給個背景；Electron 桌寵視窗則完全透明 */}
+      {!isElectron && (
+        <div data-passthrough className="absolute inset-0 -z-10 bg-gradient-to-br from-slate-800 via-slate-900 to-indigo-950" />
+      )}
+
       {/* 四個角落的拖曳把手（只在 Electron 桌寵視窗顯示） */}
       <WindowDragCorners />
-      {/* Top Universal Navbar */}
-      <header className="draggable sticky top-0 z-40 bg-slate-900/90 border-b border-slate-800/80 backdrop-blur-md px-4 py-2.5">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
-          {/* Logo & Brand */}
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-sky-400 via-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-purple-950/40">
-              <Sparkles className="w-4 h-4 text-white" />
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <h1 className="font-bold text-sm sm:text-base text-slate-100 tracking-tight">
-                  Gemini 雙子星貓
-                </h1>
-                <span className="text-[11px] font-semibold text-purple-400">· 美國大豆包</span>
-              </div>
-              <p className="text-[10px] text-slate-400 hidden sm:block">
-                電腦即時視覺感知 · 艾賓浩斯記憶衰變 · 語音靈動伴侶
-              </p>
-            </div>
-          </div>
 
-          {/* Quick Action Badges */}
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Gemini Model & Plan Selector */}
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-amber-950/60 border border-amber-500/40 text-amber-200">
-              <Cpu className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-              <select
-                value={preferredModel}
-                onChange={(e) => setPreferredModel(e.target.value as GeminiModelOption)}
-                className="bg-transparent text-xs font-medium text-amber-100 focus:outline-none cursor-pointer"
-                title="選擇優先調用的 Gemini 模型方案（若遇單一模型限流會自動無縫切換備援池）"
-              >
-                <option value="gemini-3.1-pro-preview" className="bg-slate-900 text-amber-200">
-                  ✨ Gemini 3.1 Pro (主力高階)
-                </option>
-                <option value="gemini-3.8-flash" className="bg-slate-900 text-amber-200">
-                  ⚡ Gemini 3.8 Flash (最新多模態)
-                </option>
-                <option value="gemini-4-argon" className="bg-slate-900 text-amber-200">
-                  🔥 Gemini 4 Pro / Argon
-                </option>
-                <option value="auto" className="bg-slate-900 text-emerald-300">
-                  🚀 自動智慧輪替 (Auto 極速防限流)
-                </option>
-                <option value="gemini-3-flash-preview" className="bg-slate-900 text-slate-200">
-                  💨 Gemini 3.0 Flash (1.7秒極速)
-                </option>
-                <option value="gemini-3.5-flash" className="bg-slate-900 text-slate-200">
-                  🌟 Gemini 3.5 Flash
-                </option>
-                <option value="gemini-3.1-flash-lite" className="bg-slate-900 text-slate-200">
-                  🍃 Gemini 3.1 Flash Lite
-                </option>
-              </select>
-            </div>
-
-            {/* Memory Notebook Button */}
-            <button
-              onClick={() => setActiveModal('notebook')}
-              className="no-drag flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-800/80 hover:bg-slate-700 text-purple-200 border border-purple-500/30 transition-all hover:scale-105"
-            >
-              <BookOpen className="w-3.5 h-3.5 text-purple-400" />
-              <span>記憶小筆記</span>
-              <span className="font-mono text-[10px] bg-purple-950 px-1.5 py-0.2 rounded-full text-purple-300">
-                {permanentCount}
-              </span>
-            </button>
-
-            {/* Video Backlog Button */}
-            <button
-              onClick={() => setActiveModal('videos')}
-              className="no-drag flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-800/80 hover:bg-slate-700 text-indigo-200 border border-indigo-500/30 transition-all hover:scale-105"
-            >
-              <Film className="w-3.5 h-3.5 text-indigo-400" />
-              <span>摸魚手帳</span>
-              <span className="font-mono text-[10px] bg-indigo-950 px-1.5 py-0.2 rounded-full text-indigo-300">
-                {videos.length}
-              </span>
-            </button>
-
-            {/* Voice Toggle */}
-            <button
-              onClick={() => setVoiceEnabled(!voiceEnabled)}
-              className={`p-2 no-drag rounded-xl text-xs transition-all ${voiceEnabled
-                ? 'bg-purple-950/80 text-purple-300 border border-purple-800/60'
-                : 'bg-slate-800 text-slate-400 border border-slate-700'
-                }`}
-              title={voiceEnabled ? '語音朗讀已開啟' : '目前靜音'}
-            >
-              {voiceEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-            </button>
-
-            {/* Open in Standalone Browser Tab / Window */}
-            <a
-              href={typeof window !== 'undefined' ? window.location.href : 'https://ais-dev-5frunej2yhmqel4apkhzxn-985803451248.asia-southeast1.run.app'}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex no-drag items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-500/40 transition-all hover:scale-105"
-              title="在新分頁開啟獨立視窗（開啟後可透過瀏覽器選單『將頁面安裝為應用程式』變成桌面獨立視窗）"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">獨立視窗開啟</span>
-            </a>
-
-            {/* Toggle Side Panel on Mobile/Desktop */}
-            <button
-              onClick={() => setShowSidePanel(!showSidePanel)}
-              className="p-2 no-drag rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
-              title="展開/收起個性與螢幕設定"
-            >
-              <Settings2 className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Workspace Grid */}
-      <main className="flex-1 no-drag max-w-7xl w-full mx-auto p-3 sm:p-5 grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        {/* Left Column: Avatar & Controls (4 Cols) */}
-        <div className="lg:col-span-4 no-drag flex flex-col gap-5">
-          {/* Avatar Stage Box */}
-          <div className="bg-slate-900/80 border no-drag border-slate-800 rounded-2xl p-4 sm:p-6 flex flex-col items-center justify-center relative overflow-hidden backdrop-blur-md">
-            {/* Ambient Background Aura */}
-            <div className="absolute top-1/2 no-drag left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-48 bg-purple-600/15 rounded-full blur-3xl pointer-events-none" />
-
-            {/* Twin Cat Vector Avatar */}
-            <TwinCatAvatar
-              isTalking={isTalking}
-              speechText={speechBubbleText}
-              isWatchingScreen={Boolean(currentActivity)}
+      {/* 對話框：像漫畫氣泡一樣從立繪旁邊彈出 */}
+      <AnimatePresence>
+        {isChatOpen && (
+          <motion.div
+            key="chat-bubble"
+            initial={{ opacity: 0, scale: 0.85, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9, y: 16 }}
+            transition={{ type: 'spring', damping: 22, stiffness: 280 }}
+            style={{ transformOrigin: '85% 100%' }}
+            className="absolute z-40 right-2 bottom-[calc(var(--pet-h)+14px)] w-[min(440px,calc(100%-16px))] h-[min(560px,calc(100%-var(--pet-h)-24px))]"
+          >
+            <ChatInterface
+              className="h-full"
+              onClose={() => setIsChatOpen(false)}
+              messages={messages}
+              onSendMessage={handleSendMessage}
+              onInterrupt={handleInterrupt}
+              chatStyle={chatStyle}
+              onToggleChatStyle={() => setChatStyle((prev) => (prev === 'line' ? 'gemini' : 'line'))}
               voiceEnabled={voiceEnabled}
               onToggleVoice={() => setVoiceEnabled(!voiceEnabled)}
-              onOpenChat={() => { }}
-              onPetHead={handlePetHead}
-              petState={pet.state}
-              onPatStart={() => {
-                pet.startPatting();
-                handlePetHead();
-              }}
-              onPatEnd={pet.stopPatting}
-              onPreviewPetState={pet.previewState}
+              onClearMessages={() => setMessages(INITIAL_MESSAGES)}
+              personality={personality}
+              permanentMemories={memories.filter((m) => m.isPermanent)}
+              currentActivity={currentActivity}
+              isStreamingOrWaiting={isStreamingOrWaiting}
+              voiceInputState={voiceInput.state}
+              voiceInputLevel={voiceInput.level}
+              voiceInputError={voiceInput.error}
+              onToggleVoiceInput={voiceInput.toggle}
+              onCancelVoiceInput={voiceInput.cancel}
+              onDismissVoiceInputError={voiceInput.clearError}
+              voiceHotkey={voiceHotkey}
             />
+            {/* 漫畫氣泡的尾巴，指向立繪 */}
+            <span
+              className={`absolute -bottom-2 right-24 w-5 h-5 rotate-45 border-r border-b ${
+                chatStyle === 'line' ? 'bg-slate-900 border-[#06C755]/40' : 'bg-slate-900 border-purple-500/40'
+              }`}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-            {/* Quick Status Kicker */}
-            <div className="mt-4 text-center">
-              <p className="text-xs text-slate-400">
-                點擊頭頂可摸摸頭 · 點右下角按鈕可調語音
-              </p>
-            </div>
-          </div>
-
-          {/* Collapsible Personality & Screen Tracker Controls */}
-          {showSidePanel && (
-            <div className="space-y-4">
-              {/* Screen Vision Tracker Module */}
-              <ScreenVisionTracker
-                personality={personality}
-                permanentMemories={memories.filter((m) => m.isPermanent)}
-                onActivityDetected={handleActivityDetected}
-                isAutoTracking={isAutoTracking}
-                onToggleAutoTracking={setIsAutoTracking}
-                interruptSignal={interruptSignal}
-                preferredModel={preferredModel}
-              />
-
-              {/* Personality Tuner Module */}
-              <PersonalityTuner
-                personality={personality}
-                onChange={setPersonality}
-              />
-            </div>
-          )}
-        </div>
-
-        {/* Right Column: Direct LINE / Gemini Chat Interface (8 Cols) */}
-        <div className="lg:col-span-8 flex flex-col gap-4">
-          <ChatInterface
-            messages={messages}
-            onSendMessage={handleSendMessage}
-            onInterrupt={handleInterrupt}
-            chatStyle={chatStyle}
-            onToggleChatStyle={() =>
-              setChatStyle((prev) => (prev === 'line' ? 'gemini' : 'line'))
-            }
-            voiceEnabled={voiceEnabled}
-            onToggleVoice={() => setVoiceEnabled(!voiceEnabled)}
-            onClearMessages={() => setMessages(INITIAL_MESSAGES)}
+      {/* 設定面板（半透明懸浮；關閉時只隱藏，螢幕偵測不會中斷） */}
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        initialTab={settingsTab}
+        visualMode={appearance.visualMode}
+        onVisualModeChange={appearance.setVisualMode}
+        hasCustomImage={Boolean(appearance.customImgUrl)}
+        onUploadCustomImage={appearance.uploadCustomImage}
+        onPreviewPetState={pet.previewState}
+        preferredModel={preferredModel}
+        onPreferredModelChange={setPreferredModel}
+        voiceEnabled={voiceEnabled}
+        onToggleVoice={() => setVoiceEnabled(!voiceEnabled)}
+        voiceHotkey={voiceHotkey}
+        screenTracker={
+          <ScreenVisionTracker
             personality={personality}
             permanentMemories={memories.filter((m) => m.isPermanent)}
-            currentActivity={currentActivity}
-            isStreamingOrWaiting={isStreamingOrWaiting}
-            voiceInputState={voiceInput.state}
-            voiceInputLevel={voiceInput.level}
-            voiceInputError={voiceInput.error}
-            onToggleVoiceInput={voiceInput.toggle}
-            onCancelVoiceInput={voiceInput.cancel}
-            onDismissVoiceInputError={voiceInput.clearError}
-            voiceHotkey={voiceHotkey}
+            onActivityDetected={handleActivityDetected}
+            isAutoTracking={isAutoTracking}
+            onToggleAutoTracking={setIsAutoTracking}
+            interruptSignal={interruptSignal}
+            preferredModel={preferredModel}
           />
-        </div>
-      </main>
+        }
+        personalityTuner={<PersonalityTuner personality={personality} onChange={setPersonality} />}
+      />
+
+      {/* 桌寵本體：固定在右下角的座標點 */}
+      <div className="absolute z-30 right-2 bottom-2" style={{ width: 'var(--pet-w)', height: 'var(--pet-h)' }}>
+        <PetStage
+          visualMode={appearance.visualMode}
+          customImgUrl={appearance.customImgUrl}
+          petState={pet.state}
+          isTalking={isTalking}
+          speechText={speechBubbleText}
+          showSpeech={!isChatOpen && !settingsOpen}
+          isWatchingScreen={Boolean(currentActivity) && isAutoTracking}
+          isListening={voiceInput.state === 'listening'}
+          onLeftClick={() => {
+            setRadialMenu((m) => ({ ...m, open: false }));
+            setSettingsOpen(false);
+            setIsChatOpen((v) => !v);
+          }}
+          onRightClick={({ x, y }) => setRadialMenu((m) => ({ open: !m.open, x, y }))}
+          onPatStart={() => {
+            pet.startPatting();
+            handlePetHead();
+          }}
+          onPatEnd={pet.stopPatting}
+        />
+      </div>
+
+      {/* 右鍵扇形選單 */}
+      <RadialMenu
+        open={radialMenu.open}
+        center={{ x: radialMenu.x, y: radialMenu.y }}
+        items={radialItems}
+        onClose={() => setRadialMenu((m) => ({ ...m, open: false }))}
+      />
 
       {/* Memory Notebook Modal */}
       {activeModal === 'notebook' && (
-        <MemoryNotebookModal
-          memories={memories}
-          onClose={() => setActiveModal('none')}
-        />
+        <MemoryNotebookModal memories={memories} onClose={() => setActiveModal('none')} />
       )}
 
       {/* Idle Video Backlog Modal */}
@@ -685,8 +663,11 @@ export default function App() {
           videos={videos}
           onClose={() => setActiveModal('none')}
           onExploreNow={handleExploreNow}
-          onAskAboutVideo={handleAskAboutVideo}
-          onDeleteVideo={handleDeleteVideo} // <-- 新增這一行
+          onAskAboutVideo={(video) => {
+            handleAskAboutVideo(video);
+            setIsChatOpen(true);
+          }}
+          onDeleteVideo={handleDeleteVideo}
         />
       )}
     </div>

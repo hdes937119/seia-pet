@@ -11,8 +11,9 @@ let mainWindow;
 
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 450,
-        height: 700,
+        // 浮動版面：右下角是立繪，上方留空間給漫畫氣泡式對話框
+        width: 470,
+        height: 820,
         transparent: true,
         frame: false,
         alwaysOnTop: true,
@@ -70,6 +71,14 @@ ipcMain.on('window-drag-start', (event) => {
 });
 
 ipcMain.on('window-drag-stop', stopWindowDrag);
+
+// 透明區域滑鼠穿透：前端回報滑鼠是否停在透明背景上
+// forward: true 讓穿透時仍持續收到 mousemove，滑鼠一移回立繪就能恢復可點擊
+ipcMain.on('set-ignore-mouse', (event, ignore) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return;
+    win.setIgnoreMouseEvents(Boolean(ignore), { forward: true });
+});
 
 // 語音輸入全域熱鍵：就算正在打遊戲（桌寵沒有焦點）也能按。
 // 預設 Ctrl+Alt+V，可用環境變數 VOICE_HOTKEY 改，例如 VOICE_HOTKEY=F8

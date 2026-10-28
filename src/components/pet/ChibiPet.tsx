@@ -1,4 +1,6 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
+
+const LONG_PRESS_MS = 220; // 按住超過這個時間才算摸頭，輕點則是打開對話框
 import { BASE_SPRITE, PET_SPRITES, PET_STATES, type PetStateId, type SpriteAsset } from './petStates';
 import { PetAccessories, PetAura, PetParticles } from './PetEffects';
 
@@ -61,6 +63,19 @@ export const ChibiPet: React.FC<ChibiPetProps> = ({
   const config = PET_STATES[state] ?? PET_STATES.idle;
   const sprite = PET_SPRITES[state];
 
+  const pressTimer = useRef<number | undefined>(undefined);
+  const patting = useRef(false);
+  const suppressClick = useRef(false);
+  const endPress = () => {
+    window.clearTimeout(pressTimer.current);
+    if (patting.current) {
+      patting.current = false;
+      suppressClick.current = true;
+      onHeadPressEnd?.();
+    }
+  };
+  useEffect(() => () => window.clearTimeout(pressTimer.current), []);
+
   return (
     <div
       className="relative h-full aspect-[3/4] mx-auto select-none"
@@ -88,19 +103,30 @@ export const ChibiPet: React.FC<ChibiPetProps> = ({
         <PetParticles specs={config.particles} stateKey={state} />
       </div>
 
-      {/* 頭部感應區：按住就是摸頭 */}
+      {/* 頭部感應區：按住（長按）是摸頭；輕點則照常往上傳給立繪的 onClick（打開對話框） */}
       {(onHeadPressStart || onHeadPressEnd) && (
         <div
           className="absolute z-40 left-[12%] top-[2%] w-[55%] h-[38%] rounded-full cursor-grab active:cursor-grabbing"
-          title="摸摸頭～"
+          title="輕點聊天 · 按住摸頭"
           onPointerDown={(e) => {
-            e.stopPropagation();
+            if (e.button !== 0) return;
             e.currentTarget.setPointerCapture(e.pointerId);
-            onHeadPressStart?.();
+            patting.current = false;
+            window.clearTimeout(pressTimer.current);
+            pressTimer.current = window.setTimeout(() => {
+              patting.current = true;
+              onHeadPressStart?.();
+            }, LONG_PRESS_MS);
           }}
-          onPointerUp={() => onHeadPressEnd?.()}
-          onPointerCancel={() => onHeadPressEnd?.()}
-          onClick={(e) => e.stopPropagation()}
+          onPointerUp={endPress}
+          onPointerCancel={endPress}
+          onClick={(e) => {
+            // 剛剛是摸頭 → 不要順便打開對話框
+            if (suppressClick.current) {
+              e.stopPropagation();
+              suppressClick.current = false;
+            }
+          }}
         />
       )}
 

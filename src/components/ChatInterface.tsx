@@ -23,6 +23,9 @@ interface ChatInterfaceProps {
   onCancelVoiceInput?: () => void;
   onDismissVoiceInputError?: () => void;
   voiceHotkey?: string | null;
+  /** 外框尺寸（浮動對話框時用 h-full 跟著容器） */
+  className?: string;
+  onClose?: () => void;
 }
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({
@@ -45,6 +48,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   onCancelVoiceInput,
   onDismissVoiceInputError,
   voiceHotkey,
+  className = 'h-[600px] max-h-[82vh]',
+  onClose,
 }) => {
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
@@ -78,10 +83,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   return (
     <div
-      className={`flex flex-col h-[600px] max-h-[82vh] rounded-2xl overflow-hidden border shadow-2xl transition-colors duration-300 ${
+      className={`flex flex-col ${className} rounded-2xl overflow-hidden border shadow-2xl backdrop-blur-xl transition-colors duration-300 ${
         chatStyle === 'line'
-          ? 'bg-[#1E2329] border-[#06C755]/30 shadow-emerald-950/20'
-          : 'bg-slate-900 border-purple-500/30 shadow-purple-950/20'
+          ? 'bg-[#1E2329]/90 border-[#06C755]/40 shadow-emerald-950/30'
+          : 'bg-slate-900/90 border-purple-500/40 shadow-purple-950/30'
       }`}
     >
       {/* Top Header Bar */}
@@ -166,6 +171,16 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           >
             <Trash2 className="w-4 h-4" />
           </button>
+
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              title="收起對話框（再點一下立繪也可以）"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 
