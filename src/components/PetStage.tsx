@@ -1,7 +1,9 @@
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Eye, Mic } from 'lucide-react';
+import { Eye, Mic, Search } from 'lucide-react';
 import { ChibiPet } from './pet/ChibiPet';
+import { DiscoveryBubble } from './DiscoveryBubble';
+import type { Discovery } from '../types';
 import type { PetStateId } from './pet/petStates';
 import type { VisualMode } from '../hooks/useAvatarAppearance';
 
@@ -26,6 +28,11 @@ interface PetStageProps {
   onRightClick: (point: { x: number; y: number }) => void;
   onPatStart: () => void;
   onPatEnd: () => void;
+  /** 自主探索推播 */
+  discovery?: Discovery | null;
+  isExploring?: boolean;
+  onOpenDiscovery?: () => void;
+  onDismissDiscovery?: () => void;
 }
 
 export const PetStage: React.FC<PetStageProps> = ({
@@ -41,6 +48,10 @@ export const PetStage: React.FC<PetStageProps> = ({
   onRightClick,
   onPatStart,
   onPatEnd,
+  discovery,
+  isExploring = false,
+  onOpenDiscovery,
+  onDismissDiscovery,
 }) => {
   return (
     <div
@@ -54,9 +65,16 @@ export const PetStage: React.FC<PetStageProps> = ({
         onRightClick({ x: rect.left + rect.width / 2, y: rect.top + rect.height * 0.45 });
       }}
     >
+      {/* 自主探索推播氣泡（優先於一般對話泡泡） */}
+      <AnimatePresence>
+        {discovery && onOpenDiscovery && onDismissDiscovery && (
+          <DiscoveryBubble key={discovery.id} discovery={discovery} onOpen={onOpenDiscovery} onDismiss={onDismissDiscovery} />
+        )}
+      </AnimatePresence>
+
       {/* 頭上的漫畫泡泡（對話框收起時才顯示） */}
       <AnimatePresence>
-        {showSpeech && speechText && (
+        {showSpeech && speechText && !discovery && (
           <motion.div
             key="speech"
             initial={{ opacity: 0, y: 8, scale: 0.9 }}
@@ -78,6 +96,11 @@ export const PetStage: React.FC<PetStageProps> = ({
         {isWatchingScreen && (
           <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] bg-slate-950/70 text-emerald-300 border border-emerald-500/40">
             <Eye className="w-3 h-3 animate-pulse" /> 注視中
+          </span>
+        )}
+        {isExploring && (
+          <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] bg-sky-600/90 text-white animate-pulse">
+            <Search className="w-3 h-3" /> 上網逛逛中
           </span>
         )}
         {isListening && (

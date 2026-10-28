@@ -5,6 +5,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 角落把手拖動整個桌寵視窗
   startWindowDrag: () => ipcRenderer.send('window-drag-start'),
   stopWindowDrag: () => ipcRenderer.send('window-drag-stop'),
+  // 自主探索：系統閒置秒數、用預設瀏覽器開啟連結
+  getSystemIdleSeconds: () => ipcRenderer.invoke('get-system-idle'),
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
   // 透明區域滑鼠穿透：ignore=true 時點擊會穿過視窗到底下的程式
   setIgnoreMouse: (ignore) => ipcRenderer.send('set-ignore-mouse', Boolean(ignore)),
   // 語音輸入全域熱鍵：回傳取消訂閱的函式

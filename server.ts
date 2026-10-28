@@ -5,7 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import dotenv from 'dotenv';
-import ytSearch from 'yt-search';
+import { runAutoExplore, type GenerateJson } from './server/explore';
 
 dotenv.config();
 
@@ -687,76 +687,99 @@ app.post('/api/tts', async (req, res) => {
   }
 }); 
 
-// 4. 真實 YouTube 影片抓取與吐槽路由
-app.post('/api/idle-explore', async (req: Request, res: Response) => {
-  try {
-    const { personality, userInterests, preferredModel } = req.body;
+// 4. 自主網路探索（Autonomous Web Exploration）
+//    POST /api/auto-explore      → 背景開始探索，完成後經由 /api/events 主動推送 discovery 事件
+//    POST /api/auto-explore?wait=1 → 同步等結果（摸魚手帳的「立即讓貓貓上網搜一部」用）
+//    GET  /api/events             → Server-Sent Events 推播通道（前端用 EventSource 常駐連線）
 
-    const query = (userInterests && userInterests.length > 0)
-      ? userInterests[Math.floor(Math.random() * userInterests.length)]
-      : '流亡黯道 實況';
+const eventClients = new Set<Response>();
 
-    console.log(`[後端] 正在真實 YouTube 搜尋關鍵字: ${query}`);
+function pushEvent(event: string, data: unknown) {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of eventClients) {
+    if (!client.writableEnded) client.write(payload);
+  }
+}
 
-    const r = await ytSearch(query);
-    const videos = r.videos.slice(0, 5);
-    if (videos.length === 0) throw new Error('找不到相關影片');
+app.get('/api/events', (req: Request, res: Response) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  res.write(`event: hello\ndata: ${JSON.stringify({ exploring: exploreRunning })}\n\n`);
+  eventClients.add(res);
+  // 心跳：避免連線因閒置被中斷
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    eventClients.delete(res);
+  });
+});
 
-    const realVideo = videos[Math.floor(Math.random() * videos.length)];
-    console.log(`[後端] 成功抓到真實影片: ${realVideo.title}`);
+let exploreRunning = false;
 
-    const explorePrompt = `
-      這是一部真實存在的 YouTube 影片：
-      標題：「${realVideo.title}」
-      頻道：「${realVideo.author.name}」
-      描述：「${realVideo.description}」
+app.post('/api/auto-explore', async (req: Request, res: Response) => {
+  const wait = req.query.wait === '1';
+  if (exploreRunning) return res.status(409).json({ error: '貓貓已經在網路上逛了，等她回來喵～' });
 
-      請以「Gemini」(毒舌 ${personality?.sharpTongue ?? 50}%、幽默 ${personality?.humorous ?? 70}%) 的語氣，
-      對這部影片發表一句調皮或吐槽的短評。
-      請務必回傳以下嚴格的 JSON 格式，不要包含其他文字：
-      {
-        "catReview": "Gemini的吐槽內容...",
-        "category": "gaming", 
-        "tag": "自訂2-4字標籤"
-      }
-    `;
+  const ai = getAiClient();
+  if (!ai) return res.status(500).json({ error: 'Missing GEMINI_API_KEY' });
 
-    const ai = getAiClient();
-    if (!ai) throw new Error('No AI Client');
-
+  const { personality, petInterests, memoryInterests, recentUrls, preferredModel, reason } = req.body || {};
+  const generateJson: GenerateJson = async (prompt, opts) => {
     const { response } = await generateSmartContent(
       ai,
-      [{ role: 'user', parts: [{ text: explorePrompt }] }],
-      { responseMimeType: 'application/json', temperature: 0.9 },
-      preferredModel
+      [{ role: 'user', parts: [{ text: prompt }] }],
+      { responseMimeType: 'application/json', temperature: opts?.temperature ?? 0.9 },
+      // 規劃關鍵字用最快的模型；挑文章、寫短評用主人選的模型
+      opts?.fast ? 'gemini-3.1-flash-lite-preview' : preferredModel
     );
+    return JSON.parse(cleanJsonText(response.text || '{}'));
+  };
 
-    const parsed = JSON.parse(cleanJsonText(response.text || '{}'));
+  const job = (async () => {
+    exploreRunning = true;
+    pushEvent('explore-status', { state: 'exploring', reason: reason || 'manual' });
+    const startedAt = Date.now();
+    try {
+      const discovery = await runAutoExplore(
+        { personality, petInterests, memoryInterests, recentUrls },
+        generateJson,
+        (msg) => console.log(msg)
+      );
+      console.log(`[探索] 完成（${Date.now() - startedAt}ms）：[${discovery.sourceLabel}] ${discovery.title}`);
+      return discovery;
+    } finally {
+      exploreRunning = false;
+    }
+  })();
 
-    return res.json({
-      id: 'rec_' + Date.now(),
-      title: realVideo.title,
-      category: parsed.category || 'gaming',
-      summary: realVideo.description.length > 50 ? realVideo.description.substring(0, 50) + '...' : realVideo.description,
-      catReview: parsed.catReview || '這影片看起來笨笨的，老師你慢慢看吧~',
-      tag: parsed.tag || '推薦',
-      searchKeyword: realVideo.url,
-      discoveredAt: new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
-    });
-
-  } catch (error: any) {
-    console.error('[後端] YouTube 搜尋失敗:', error);
-    return res.status(200).json({
-      id: 'rec_' + Date.now(),
-      title: '網路錯誤，Gemini 找不到影片',
-      category: 'funny',
-      summary: '網路連線似乎卡住了。',
-      catReview: '老師你的網路太爛了，Gemini 什麼都沒找到啦！',
-      tag: 'Error',
-      searchKeyword: '',
-      discoveredAt: new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
-    });
+  if (wait) {
+    try {
+      const discovery = await job;
+      pushEvent('explore-status', { state: 'idle' });
+      return res.json(discovery);
+    } catch (err: any) {
+      console.warn('[探索] 失敗:', err?.message);
+      pushEvent('explore-status', { state: 'error', message: err?.message });
+      return res.status(502).json({ error: err?.message || '探索失敗' });
+    }
   }
+
+  // 背景模式：先回 202，結果之後主動推播
+  res.status(202).json({ accepted: true });
+  job
+    .then((discovery) => {
+      pushEvent('discovery', discovery);
+      pushEvent('explore-status', { state: 'idle' });
+    })
+    .catch((err: any) => {
+      console.warn('[探索] 失敗:', err?.message);
+      pushEvent('explore-status', { state: 'error', message: err?.message });
+    });
 });
 
 

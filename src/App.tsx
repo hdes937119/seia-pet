@@ -9,6 +9,8 @@ import {
   ScreenActivity,
   ChatStyle,
   GeminiModelOption,
+  Discovery,
+  ExploreSettings,
 } from './types';
 import { voiceService } from './services/voiceService';
 import { streamChat, createSentenceSplitter } from './services/chatStream';
@@ -17,7 +19,9 @@ import { usePetState } from './hooks/usePetState';
 import { memoryDecayService } from './services/memoryDecayService';
 import { PetStage } from './components/PetStage';
 import { RadialMenu, type RadialMenuItem } from './components/RadialMenu';
-import { SettingsPanel } from './components/SettingsPanel';
+import { SettingsPanel, type ExploreStatus, type SettingsTab } from './components/SettingsPanel';
+import { useIdleExplorer } from './hooks/useIdleExplorer';
+import { useServerEvents } from './hooks/useServerEvents';
 import { useAvatarAppearance } from './hooks/useAvatarAppearance';
 import { useClickThrough } from './hooks/useClickThrough';
 import { ScreenVisionTracker } from './components/ScreenVisionTracker';
@@ -31,6 +35,7 @@ const STORAGE_KEY_PERSONALITY = 'gemini_twin_cat_personality';
 const STORAGE_KEY_MESSAGES = 'gemini_twin_cat_messages';
 const STORAGE_KEY_VIDEOS = 'gemini_twin_cat_videos';
 const STORAGE_KEY_MODEL = 'gemini_twin_cat_preferred_model';
+const STORAGE_KEY_EXPLORE = 'gemini_twin_cat_explore';
 
 const DEFAULT_PERSONALITY: PersonalityConfig = {
   sharpTongue: 60,
@@ -135,7 +140,28 @@ export default function App() {
     y: 0,
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'look' | 'model' | 'screen' | 'persona'>('look');
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('look');
+
+  // 自主網路探索
+  const [exploreSettings, setExploreSettings] = useState<ExploreSettings>(() => {
+    const defaults: ExploreSettings = { enabled: true, idleMinutes: 15, petInterests: '' };
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_EXPLORE);
+      return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+    } catch {
+      return defaults;
+    }
+  });
+  const [exploreStatus, setExploreStatus] = useState<ExploreStatus>({ state: 'idle' });
+  const [discovery, setDiscovery] = useState<Discovery | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_EXPLORE, JSON.stringify(exploreSettings));
+    } catch {
+      // ignore
+    }
+  }, [exploreSettings]);
   const appearance = useAvatarAppearance();
   const rootRef = useRef<HTMLDivElement>(null);
   useClickThrough(rootRef);
@@ -413,37 +439,97 @@ export default function App() {
     [triggerSpeak]
   );
 
-  // 4. Autonomous Idle Exploration Trigger
-  const handleExploreNow = async () => {
+  // 4. 自主網路探索（Autonomous Web Exploration）
+  const buildExploreBody = (reason: string) => ({
+    personality, // 含 customPrompt（今日特調），作為搜尋關鍵字的種子
+    petInterests: exploreSettings.petInterests,
+    // 只拿永久記憶和還很「新鮮」的關鍵字，快被忘掉的不算興趣
+    memoryInterests: memories
+      .filter((m) => m.isPermanent || m.strength >= 40)
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 8)
+      .map((m) => m.keyword),
+    recentUrls: videos.slice(0, 40).map((v) => v.url || v.searchKeyword).filter(Boolean),
+    preferredModel,
+    reason,
+  });
+
+  // 收到探索結果：收進摸魚手帳、頭頂彈出推播氣泡、用語音叫主人
+  const handleDiscovery = useCallback(
+    (d: Discovery) => {
+      const entry: DiscoveredVideo = {
+        id: d.id,
+        title: d.title,
+        category: d.category,
+        summary: d.snippet,
+        catReview: d.catReview,
+        tag: d.tag,
+        searchKeyword: d.url,
+        url: d.url,
+        source: d.source,
+        sourceLabel: d.sourceLabel,
+        discoveredAt: d.discoveredAt,
+      };
+      setVideos((prev) => [entry, ...prev.filter((v) => (v.url || v.searchKeyword) !== d.url)]);
+      setDiscovery(d);
+      voiceService.speak(d.bubbleText);
+      pet.triggerEmotion('proud');
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pet.triggerEmotion]
+  );
+
+  /** 背景探索：後端先回 202，找到東西後經由 /api/events 主動推播 */
+  const requestExplore = async (reason: 'idle' | 'manual') => {
     try {
-      // 只拿永久記憶和還很「新鮮」的關鍵字去搜，快被忘掉的不算興趣
-      const interests = memories
-        .filter((m) => m.isPermanent || m.strength >= 40)
-        .sort((a, b) => b.strength - a.strength)
-        .slice(0, 8)
-        .map((m) => m.keyword);
-      const res = await fetch('/api/idle-explore', {
+      const res = await fetch('/api/auto-explore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          personality,
-          userInterests: interests,
-          preferredModel,
-        }),
+        body: JSON.stringify(buildExploreBody(reason)),
       });
+      if (res.status === 409) return; // 已經在逛了
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err: any) {
+      setExploreStatus({ state: 'error', message: err?.message || '無法連線到後端' });
+    }
+  };
 
-      if (!res.ok) throw new Error('探索請求失敗');
-      const newVideo: DiscoveredVideo = await res.json();
-
-      setVideos((prev) => [newVideo, ...prev]);
-
-      // Pop proactive comment
-      const comment = `哈…本喵剛剛在網上發現了一支超讚的影片《${newVideo.title}》，已幫你寫進手帳囉！`;
-      triggerSpeak(comment);
+  /** 摸魚手帳的「立即搜一部」：同步等結果 */
+  const handleExploreNow = async () => {
+    try {
+      const res = await fetch('/api/auto-explore?wait=1', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildExploreBody('manual')),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      handleDiscovery(data as Discovery);
     } catch (err) {
       console.warn('Explore error:', err);
     }
   };
+
+  const openDiscovery = (d: Discovery) => {
+    const api = (window as any).electronAPI;
+    if (api?.openExternal) api.openExternal(d.url);
+    else window.open(d.url, '_blank', 'noopener,noreferrer');
+    setDiscovery(null);
+  };
+
+  // 後端主動推播（SSE）
+  useServerEvents({
+    hello: (data) => setExploreStatus({ state: data?.exploring ? 'exploring' : 'idle' }),
+    discovery: (data) => handleDiscovery(data as Discovery),
+    'explore-status': (data) => setExploreStatus(data as ExploreStatus),
+  });
+
+  // 閒置偵測：主人超過設定時間沒操作電腦 → 自動出門探索
+  useIdleExplorer({
+    enabled: exploreSettings.enabled,
+    idleMinutes: exploreSettings.idleMinutes,
+    onIdle: () => requestExplore('idle'),
+  });
 
   // 5. Ask Twin Cat about a specific discovered video in chat
   const handleAskAboutVideo = (video: DiscoveredVideo) => {
@@ -617,6 +703,11 @@ export default function App() {
           />
         }
         personalityTuner={<PersonalityTuner personality={personality} onChange={setPersonality} />}
+        exploreSettings={exploreSettings}
+        onExploreSettingsChange={setExploreSettings}
+        onExploreNow={() => requestExplore('manual')}
+        exploreStatus={exploreStatus}
+        customPrompt={personality.customPrompt}
       />
 
       {/* 桌寵本體：固定在右下角的座標點 */}
@@ -641,6 +732,10 @@ export default function App() {
             handlePetHead();
           }}
           onPatEnd={pet.stopPatting}
+          discovery={discovery}
+          isExploring={exploreStatus.state === 'exploring'}
+          onOpenDiscovery={() => discovery && openDiscovery(discovery)}
+          onDismissDiscovery={() => setDiscovery(null)}
         />
       </div>
 

@@ -30,12 +30,40 @@ export interface ChatMessage {
 export interface DiscoveredVideo {
   id: string;
   title: string;
-  category: 'gaming' | 'animation' | 'funny' | 'tech' | 'music';
+  category: 'gaming' | 'animation' | 'funny' | 'tech' | 'music' | 'news' | 'forum' | 'article' | string;
   summary: string;
   catReview: string;
   tag: string;
-  searchKeyword: string;
+  searchKeyword: string; // 影片 / 文章網址（舊資料可能是搜尋關鍵字）
   discoveredAt: string;
+  url?: string;
+  source?: DiscoverySource;
+  sourceLabel?: string;
+}
+
+export type DiscoverySource = 'youtube' | 'wiki' | 'news' | 'reddit' | 'hn';
+
+/** 後端自主探索推送的結果（/api/auto-explore → discovery 事件） */
+export interface Discovery {
+  id: string;
+  title: string;
+  url: string;
+  source: DiscoverySource;
+  sourceLabel: string;
+  snippet: string;
+  catReview: string;
+  bubbleText: string;
+  category: string;
+  tag: string;
+  topic: string;
+  discoveredAt: string;
+}
+
+/** 自主探索設定（設定面板「探索」分頁） */
+export interface ExploreSettings {
+  enabled: boolean;
+  idleMinutes: number;
+  petInterests: string;
 }
 
 export interface ScreenActivity {

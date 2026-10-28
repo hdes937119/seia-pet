@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut } from 'electron';
+import { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, powerMonitor, shell } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -71,6 +71,16 @@ ipcMain.on('window-drag-start', (event) => {
 });
 
 ipcMain.on('window-drag-stop', stopWindowDrag);
+
+// 自主探索：系統層級的閒置秒數（主人在其他程式打遊戲 / 看網頁也算有在操作）
+ipcMain.handle('get-system-idle', () => powerMonitor.getSystemIdleTime());
+
+// 用預設瀏覽器開啟桌寵推薦的文章 / 影片（只允許 http / https）
+ipcMain.handle('open-external', async (event, url) => {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return false;
+    await shell.openExternal(url);
+    return true;
+});
 
 // 透明區域滑鼠穿透：前端回報滑鼠是否停在透明背景上
 // forward: true 讓穿透時仍持續收到 mousemove，滑鼠一移回立繪就能恢復可點擊
