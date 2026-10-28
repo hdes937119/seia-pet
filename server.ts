@@ -12,6 +12,7 @@ import {
   parseSubreddits,
   type GenerateJson,
 } from './server/explore';
+import { searchMusic, extractMusicCommand, describeMusicState, type MusicState } from './server/music';
 import { describePersonality, describeTime, type ClientTime, type PersonalityConfig } from './server/persona';
 import { createEventMemory } from './server/eventMemory';
 import { createRelationship, LEVELS } from './server/relationship';
@@ -321,7 +322,8 @@ function buildSystemPrompt(
   activeKeywords: Array<{ keyword: string; strength: number }> = [],
   currentActivity?: { type: string; title: string; observation?: string; appContext?: string },
   clientTime?: ClientTime,
-  eventContext = ''
+  eventContext = '',
+  musicState?: MusicState
 ) {
   const persona = describePersonality(personality);
   const timeLine = describeTime(clientTime);
@@ -374,9 +376,10 @@ ${activityContext}
 - 只有真的有兩件不同的事要講時，才用 [[NEXT]] 分成兩三則（最多 3 則，每則 25 字內）。例如：等等！[[NEXT]]我想到了，你可以先打第二階段…
 - 貼圖一定要單獨一則（前後用 [[NEXT]] 隔開），寫成 [[STICKER:名稱]]，名稱只能是：${STICKER_NAMES.join('、')}，不能自己發明。
 - ${chattyRhythm(personality.chatty)}
-- 隱藏標記（KEYWORDS、EMOTION）一律放在整個回覆的最後面。
+- 隱藏標記（KEYWORDS、EMOTION、MUSIC）一律放在整個回覆的最後面。
 4. 若主人這句話出現新的個人喜好/遊戲/飲食/習慣關鍵字，在文末加上隱藏標記：<!--KEYWORDS:[{"keyword":"詞","category":"preference|habit|game|topic","notes":"簡註"}]-->（若無則不加）。
-5. 每次回覆的最後一定要加上一個隱藏的情緒標記，代表你這句話的心情（桌寵會依此切換動作）：<!--EMOTION:情緒-->，情緒只能是 happy、hungry、sad、angry、proud、confused、loving 其中之一（開心/想吃/難過/生氣吐槽/得意/疑惑/害羞喜歡）。`;
+5. 每次回覆的最後一定要加上一個隱藏的情緒標記，代表你這句話的心情（桌寵會依此切換動作）：<!--EMOTION:情緒-->，情緒只能是 happy、hungry、sad、angry、proud、confused、loving 其中之一（開心/想吃/難過/生氣吐槽/得意/疑惑/害羞喜歡）。
+${describeMusicState(musicState)}`;
 }
 
 // 截圖超過這個時間就視為過期，不附給 Gemini
@@ -490,6 +493,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       latestScreenshotAt,
       preferredModel,
       clientTime,
+      musicState,
     } = req.body;
 
     const ai = getAiClient();
@@ -508,7 +512,8 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       activeKeywords || [],
       currentActivity,
       clientTime,
-      events.prompt
+      events.prompt,
+      musicState
     );
     const formattedContents = normalizeChatContents(
       messages || [],
@@ -542,6 +547,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       reply: cleanText,
       detectedKeywords,
       emotion,
+      music: extractMusicCommand(fullText),
       usedModel,
       firstTokenMs,
       latencyMs: Date.now() - startTime,
@@ -551,6 +557,18 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     if (res.writableEnded || res.destroyed || abort.signal.aborted) return;
     console.warn('Chat API fallback used:', error?.status || error?.message);
     finish('哈…本喵剛才切換頻道時閃了一下喵～主人剛才說什麼？再跟本喵說一次嘛♪', { error: true });
+  }
+});
+
+// 音樂播放器：搜尋 YouTube（前端用 IFrame 播放器播）
+app.get('/api/music/search', async (req: Request, res: Response) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.status(400).json({ error: '請給搜尋關鍵字' });
+  try {
+    res.json({ query: q, tracks: await searchMusic(q) });
+  } catch (err: any) {
+    console.warn('[音樂] 搜尋失敗:', err?.message);
+    res.status(502).json({ error: '搜尋 YouTube 失敗，等等再試試' });
   }
 });
 

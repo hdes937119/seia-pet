@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { BookOpen, Film, Volume2, VolumeX, Settings2, Monitor, MessageCircle, Mic } from 'lucide-react';
+import { BookOpen, Film, Volume2, VolumeX, Settings2, Monitor, MessageCircle, Mic, Music2 } from 'lucide-react';
 import {
   PersonalityConfig,
   MemoryKeyword,
@@ -31,6 +31,8 @@ import { useRelationship } from './hooks/useRelationship';
 import { RelationshipCard } from './components/RelationshipCard';
 import { useAvatarAppearance } from './hooks/useAvatarAppearance';
 import { useClickThrough } from './hooks/useClickThrough';
+import { useMusicPlayer } from './hooks/useMusicPlayer';
+import { MusicPlayer } from './components/MusicPlayer';
 import { ScreenVisionTracker } from './components/ScreenVisionTracker';
 import { PersonalityTuner } from './components/PersonalityTuner';
 import { MemoryNotebookModal } from './components/MemoryNotebookModal';
@@ -417,6 +419,13 @@ export default function App() {
           latestScreenshotAt: currentActivity?.capturedAt,
           preferredModel,
           clientTime: getClientTime(),
+          // 讓她知道現在在放什麼（「這首是什麼」「下一首」才接得上）
+          musicState: {
+            status: music.state.status,
+            title: music.track?.title,
+            author: music.track?.author,
+            volume: music.state.volume,
+          },
         },
         controller.signal,
         (delta) => {
@@ -427,6 +436,9 @@ export default function App() {
       );
 
       if (controller.signal.aborted) return;
+
+      // 主人叫她放歌 / 切歌 / 調音量 → 馬上執行，不用等後面幾則訊息打完字
+      if (data.music) music.command(data.music);
 
       // 中途斷線但已經講了一半 → 保留已輸出的內容；正常結束時用後端整理過的完整回覆
       const finalText =
@@ -479,6 +491,10 @@ export default function App() {
     onStart: () => voiceService.stop(),
   });
   const [voiceHotkey, setVoiceHotkey] = useState<string | null>(null);
+
+  // 內建音樂播放器：她說話、或主人在語音輸入時，音樂自動轉小聲
+  const music = useMusicPlayer({ duck: isTalking || voiceInput.state === 'listening' });
+  const [musicOpen, setMusicOpen] = useState(false);
 
   // Electron 全域熱鍵：就算正在打遊戲（桌寵不在焦點）也能觸發
   useEffect(() => {
@@ -742,6 +758,13 @@ export default function App() {
       onSelect: () => openSettings('screen'),
     },
     {
+      id: 'music',
+      label: '音樂',
+      icon: <Music2 className="w-5 h-5" />,
+      active: musicOpen || music.state.status === 'playing',
+      onSelect: () => setMusicOpen((v) => !v),
+    },
+    {
       id: 'mute',
       label: voiceEnabled ? '靜音' : '開聲音',
       icon: voiceEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />,
@@ -891,11 +914,17 @@ export default function App() {
         />
       </div>
 
+      {/* 迷你音樂播放器（立繪左邊） */}
+      <MusicPlayer music={music} open={musicOpen} onClose={() => setMusicOpen(false)} />
+
       {/* 右鍵扇形選單 */}
       <RadialMenu
         open={radialMenu.open}
         center={{ x: radialMenu.x, y: radialMenu.y }}
         items={radialItems}
+        // 多了「音樂」共 8 顆按鈕 → 半徑和展開角度加大，按鈕才不會疊在一起
+        radius={128}
+        spreadDeg={170}
         onClose={() => setRadialMenu((m) => ({ ...m, open: false }))}
       />
 

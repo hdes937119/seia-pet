@@ -7,6 +7,12 @@ export interface ChatDonePayload {
   reply: string;
   detectedKeywords?: Array<{ keyword: string; category?: any; notes?: string }>;
   emotion?: string | null; // 桌寵情緒：happy / hungry / sad / angry / proud / confused / loving
+  // 音樂播放器指令（主人叫她放歌、切歌、調音量時才有）
+  music?: {
+    action: 'play' | 'pause' | 'resume' | 'next' | 'previous' | 'stop' | 'volume';
+    query?: string;
+    volume?: number;
+  } | null;
   usedModel?: string;
   latencyMs?: number;
   firstTokenMs?: number | null;
