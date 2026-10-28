@@ -384,6 +384,8 @@ ${describeMusicState(musicState)}`;
 
 // 截圖超過這個時間就視為過期，不附給 Gemini
 const SCREENSHOT_MAX_AGE_MS = 3 * 60 * 1000;
+// 聊天時帶給模型的最近對話則數（合併連傳訊息之後計算）
+const CHAT_CONTEXT_TURNS = 20;
 // 只在明確問到畫面時才附截圖（避免「什麼」「這個」這類常見詞誤判）
 const SCREEN_QUESTION_RE = /畫面|螢幕|影片|視窗|字幕|這部|這段|這個人|這遊戲|你看|看到|在看|在玩|截圖/;
 
@@ -399,9 +401,7 @@ function normalizeChatContents(
     return [{ role: 'user' as const, parts: [{ text: '你好！' }] }];
   }
 
-  const recentMessages = messages.slice(-8);
-
-  for (const msg of recentMessages) {
+  for (const msg of messages) {
     const text = (msg?.content || '').trim();
     if (!text) continue;
     const role: 'user' | 'model' = msg.role === 'user' ? 'user' : 'model';
@@ -427,6 +427,14 @@ function normalizeChatContents(
           parts: [{ text }],
         });
       }
+    }
+  }
+
+  // 上下文長度：最近 CHAT_CONTEXT_TURNS 則（她連傳的好幾則、貼圖已經在上面合併成一則，所以約等於 10 個來回）
+  if (normalized.length > CHAT_CONTEXT_TURNS) {
+    normalized.splice(0, normalized.length - CHAT_CONTEXT_TURNS);
+    if (normalized[0].role === 'model') {
+      normalized.unshift({ role: 'user', parts: [{ text: '（接續之前的聊天）' }] });
     }
   }
 

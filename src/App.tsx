@@ -403,7 +403,8 @@ export default function App() {
 
       const data = await streamChat(
         {
-          messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
+          // 後端會把連傳訊息合併後取最近 20 則；這裡多送一些原始訊息當餘裕，但不要整串歷史都送
+          messages: nextMessages.slice(-80).map((m) => ({ role: m.role, content: m.content })),
           personality,
           permanentMemories,
           activeKeywords,
