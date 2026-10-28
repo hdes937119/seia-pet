@@ -93,12 +93,34 @@ function modelsToTryFor(preferredModel?: string) {
   const head =
     preferredModel && preferredModel !== 'auto' ? preferredModel : lastWorkingModel;
   const ordered = head ? [head, ...DEFAULT_CASCADE.filter((m) => m !== head)] : DEFAULT_CASCADE;
-  return ordered.filter((m) => !missingModels.has(m));
+  const available = ordered.filter((m) => !missingModels.has(m));
+  const now = Date.now();
+  const ready = available.filter((m) => (coolingUntil.get(m) ?? 0) <= now);
+  // 全部都在冷卻中就還是照順序試，總比直接失敗好
+  return ready.length > 0 ? ready : available;
 }
 
+// 被限流（429）或伺服器過載（503）的模型先暫停一下，不要每次都先撞一次牆
+const coolingUntil = new Map<string, number>();
+function noteModelError(model: string, err: any) {
+  const ms = err?.status === 429 ? 5 * 60_000 : err?.status === 503 ? 30_000 : 0;
+  if (!ms) return;
+  coolingUntil.set(model, Date.now() + ms);
+  if (lastWorkingModel === model) lastWorkingModel = null;
+  console.warn(`[Gemini] 模型 ${model} 回 ${err.status}，暫停 ${ms / 1000} 秒`);
+}
+
+// 實測（帶截圖）：大多數 3.x 模型用 MINIMAL 最快（約 1.1~2 秒），
+// 3.7 / 3.8 / flash-latest / pro / argon 不接受 MINIMAL，用 LOW；2.5 系列只吃 thinkingBudget。
 function thinkingConfigFor(model: string) {
-  const isProOrArgon = model.includes('pro') || model.includes('argon') || model.includes('3.8');
-  return isProOrArgon ? { thinkingLevel: ThinkingLevel.LOW } : { thinkingBudget: 0 };
+  if (model.includes('2.5')) return { thinkingBudget: 0 };
+  const needsLow =
+    model.includes('pro') ||
+    model.includes('argon') ||
+    model.includes('3.7') ||
+    model.includes('3.8') ||
+    model === 'gemini-flash-latest';
+  return { thinkingLevel: needsLow ? ThinkingLevel.LOW : ThinkingLevel.MINIMAL };
 }
 
 async function generateSmartContent(
@@ -132,6 +154,7 @@ async function generateSmartContent(
     } catch (err: any) {
       if (isAbortError(err) || abortSignal?.aborted) throw err;
       lastError = err;
+      noteModelError(model, err);
 
       if (err?.status === 404) {
         console.warn(`[Gemini] 模型 ${model} 不存在，之後會略過`);
@@ -207,6 +230,7 @@ async function streamSmartContent(
         if (isAbortError(err) || abortSignal.aborted) throw err;
         if (started) throw err; // 已經輸出一半，不能換模型
         lastError = err;
+        noteModelError(model, err);
         if (err?.status === 404) {
           console.warn(`[Gemini] 模型 ${model} 不存在，之後會略過`);
           missingModels.add(model);
