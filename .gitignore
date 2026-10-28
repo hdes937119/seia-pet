@@ -1,0 +1,11 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# GPT-SoVITS 本地執行環境（體積巨大，不納入版本控制）
+TTS/

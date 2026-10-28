@@ -1,0 +1,10 @@
+{
+  "name": "Gemini 雙子星貓 · 美國大豆包 AI 桌寵",
+  "description": "雙子星貓專屬桌寵。具備電腦螢幕即時工作感知、LINE / Gemini 雙模式聊天、微性格拉桿調音台、語音發聲、待機自主探索推薦與記憶衰變系統。",
+  "requestFramePermissions": [
+    "display-capture"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
