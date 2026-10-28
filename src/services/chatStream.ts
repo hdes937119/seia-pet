@@ -6,6 +6,7 @@
 export interface ChatDonePayload {
   reply: string;
   detectedKeywords?: Array<{ keyword: string; category?: any; notes?: string }>;
+  emotion?: string | null; // 桌寵情緒：happy / hungry / sad / angry / proud / confused / loving
   usedModel?: string;
   latencyMs?: number;
   firstTokenMs?: number | null;

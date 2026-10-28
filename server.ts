@@ -227,6 +227,14 @@ function createKeywordFilter() {
   };
 }
 
+const PET_EMOTIONS = ['happy', 'hungry', 'sad', 'angry', 'proud', 'confused', 'loving'];
+
+function extractEmotion(rawText: string): string | null {
+  const m = rawText.match(/<!--\s*EMOTION:\s*([a-z]+)\s*-->/i);
+  const emotion = m?.[1]?.toLowerCase();
+  return emotion && PET_EMOTIONS.includes(emotion) ? emotion : null;
+}
+
 function extractKeywords(rawText: string): { cleanText: string; detectedKeywords: any[] } {
   let detectedKeywords: any[] = [];
   const match = rawText.match(/<!--KEYWORDS:([\s\S]*?)-->/);
@@ -329,7 +337,8 @@ ${activityContext}
 1. **絕對以主人最新輸入的內容為主來進行回應**！主人聊什麼你就專心聊什麼。
 2. **多維度記憶調用**：你有上述豐富的長期記憶檔案庫。當主人聊到相關話題時，請**隨機應變地挑選不同領域的記憶**來打屁或吐槽，絕對不要每次聊天都反覆抓同一組關鍵字炒冷飯！
 3. 像真實 LINE 好友一樣自然對話（繁體中文），可自然穿插可愛日系萌音口癖（如「喵～♪」「哼哼～」「哈…」），回覆保持精煉生動（2~4句內）。
-4. 若主人這句話出現新的個人喜好/遊戲/飲食/習慣關鍵字，在文末加上隱藏標記：<!--KEYWORDS:[{"keyword":"詞","category":"preference|habit|game|topic","notes":"簡註"}]-->（若無則不加）。`;
+4. 若主人這句話出現新的個人喜好/遊戲/飲食/習慣關鍵字，在文末加上隱藏標記：<!--KEYWORDS:[{"keyword":"詞","category":"preference|habit|game|topic","notes":"簡註"}]-->（若無則不加）。
+5. 每次回覆的最後一定要加上一個隱藏的情緒標記，代表你這句話的心情（桌寵會依此切換動作）：<!--EMOTION:情緒-->，情緒只能是 happy、hungry、sad、angry、proud、confused、loving 其中之一（開心/想吃/難過/生氣吐槽/得意/疑惑/害羞喜歡）。`;
 }
 
 // 截圖超過這個時間就視為過期，不附給 Gemini
@@ -479,6 +488,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     send('done', {
       reply: cleanText,
       detectedKeywords,
+      emotion: extractEmotion(fullText),
       usedModel,
       firstTokenMs,
       latencyMs: Date.now() - startTime,
@@ -490,6 +500,19 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     finish('哈…本喵剛才切換頻道時閃了一下喵～主人剛才說什麼？再跟本喵說一次嘛♪', { error: true });
   }
 });
+
+/**
+ * 判斷桌寵的「運作模式」：遊戲 / Gemini 網頁 / LINE / 其他。
+ * 以模型判斷為主，再用視窗標題關鍵字補強（模型偶爾會漏判）。
+ */
+function detectAppContext(modelGuess?: string, category?: string, title = ''): string {
+  const t = title.toLowerCase();
+  if (/\bline\b|line 聊天|line 群組/i.test(title)) return 'line';
+  if (t.includes('gemini') && /google|網頁|browser|chrome|edge|gemini\.google/i.test(title)) return 'gemini_web';
+  if (['gaming', 'gemini_web', 'line'].includes(modelGuess || '')) return modelGuess as string;
+  if (category === 'gaming') return 'gaming';
+  return 'other';
+}
 
 // 2. Real-Time Screen Vision Tracking Endpoint
 app.post('/api/vision-track', async (req: Request, res: Response) => {
@@ -523,6 +546,7 @@ ${scenarioHint ? `【場景提示】：${scenarioHint}` : ''}
 請嚴格只輸出以下 JSON 格式：
 {
   "activityCategory": "video" | "gaming" | "chatting" | "coding" | "work" | "idle",
+  "appContext": "gaming"（正在玩遊戲） | "gemini_web"（瀏覽器開著 Google Gemini 網頁） | "line"（LINE 桌面版或網頁版視窗） | "other"（其他）,
   "activityTitle": "從畫面讀出的具體影片名稱/視窗標題/字幕主題（15字內）",
   "observation": "詳細描述你在畫面中看到的具體人物、動作、場景與文字字幕（40字內）",
   "catComment": "以你身為雙子星貓的性格（毒舌度${personality?.sharpTongue ?? 50}%、幽默度${personality?.humorous ?? 70}%、傲嬌度${personality?.tsundere ?? 60}%），直接針對這張畫面裡的具體內容對主人主動吐槽或聊起來！（2~3句話，約35~65字，要講出畫面細節，絕對不要固定台詞！）"
@@ -558,9 +582,15 @@ ${scenarioHint ? `【場景提示】：${scenarioHint}` : ''}
     );
 
     const parsed = JSON.parse(cleanJsonText(response.text || '{}'));
+    const activityTitle = parsed.activityTitle || '螢幕畫面分析完成';
     return res.json({
       activityCategory: parsed.activityCategory || 'video',
-      activityTitle: parsed.activityTitle || '螢幕畫面分析完成',
+      appContext: detectAppContext(
+        parsed.appContext,
+        parsed.activityCategory,
+        `${activityTitle} ${parsed.observation || ''} ${scenarioHint || ''}`
+      ),
+      activityTitle,
       observation: parsed.observation || '已讀取當前畫面內容',
       catComment: parsed.catComment || '哇～這畫面看起來很有意思耶喵！',
       usedModel,
@@ -572,6 +602,7 @@ ${scenarioHint ? `【場景提示】：${scenarioHint}` : ''}
     const hintText = req.body?.scenarioHint || '';
     return res.status(200).json({
       activityCategory: 'video',
+      appContext: detectAppContext(undefined, undefined, hintText),
       activityTitle: hintText ? hintText.slice(0, 16) : '當前螢幕視窗',
       observation: hintText || '已捕捉主人當前螢幕畫面',
       catComment: hintText

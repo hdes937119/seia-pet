@@ -27,6 +27,7 @@ import {
 import { voiceService } from './services/voiceService';
 import { streamChat, createSentenceSplitter } from './services/chatStream';
 import { useVoiceInput } from './hooks/useVoiceInput';
+import { usePetState } from './hooks/usePetState';
 import { memoryDecayService } from './services/memoryDecayService';
 import { TwinCatAvatar } from './components/TwinCatAvatar';
 import { ScreenVisionTracker } from './components/ScreenVisionTracker';
@@ -140,6 +141,15 @@ export default function App() {
   const bubbleTimeoutRef = useRef<any>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
   const isWaitingRef = useRef(false);
+
+  // 桌寵動態：視窗偵測決定運作模式（遊戲 / Gemini 網頁 / LINE），15 分鐘沒更新就回到待機
+  const SCREEN_MODE_TTL_MS = 15 * 60 * 1000;
+  const appContext = currentActivity?.appContext;
+  const screenModeFresh =
+    !!currentActivity?.capturedAt && Date.now() - currentActivity.capturedAt < SCREEN_MODE_TTL_MS;
+  const screenMode =
+    screenModeFresh && appContext && appContext !== 'other' ? appContext : null;
+  const pet = usePetState(screenMode);
 
   // Subscribe to memory decay service
   useEffect(() => {
@@ -255,6 +265,7 @@ export default function App() {
     const nextMessages = [...messages, userMsg];
     setMessages(nextMessages);
     isWaitingRef.current = true;
+    pet.markActive();
     setIsStreamingOrWaiting(true);
 
     // 串流中的貓貓回覆：收到第一段文字時才建立訊息，之後逐段補上
@@ -330,6 +341,9 @@ export default function App() {
       }
 
       // Record any detected keywords into memory decay service
+      // 後端回傳的情緒訊號 → 桌寵切換情緒動作
+      pet.triggerEmotion(data.emotion);
+
       if (Array.isArray(data.detectedKeywords)) {
         for (const kw of data.detectedKeywords) {
           if (kw.keyword) {
@@ -440,7 +454,7 @@ export default function App() {
   // Head patting reaction
   const handlePetHead = () => {
     const patReactions = [
-      '哈…好舒服～再多摸兩下嘛喵！',
+      '喵～♪ 好舒服～再多摸兩下嘛！',
       '哼！本喵才不是隨便給人摸的呢……（發出呼嚕聲）',
       '呼嚕呼嚕～本喵的心情值直接飆升 100 點！',
       '主人今天辛苦啦～本喵的大豆包能量分你一半喵！',
@@ -589,6 +603,13 @@ export default function App() {
               onToggleVoice={() => setVoiceEnabled(!voiceEnabled)}
               onOpenChat={() => { }}
               onPetHead={handlePetHead}
+              petState={pet.state}
+              onPatStart={() => {
+                pet.startPatting();
+                handlePetHead();
+              }}
+              onPatEnd={pet.stopPatting}
+              onPreviewPetState={pet.previewState}
             />
 
             {/* Quick Status Kicker */}

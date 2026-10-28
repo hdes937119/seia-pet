@@ -10,3 +10,117 @@
 .no-drag {
     -webkit-app-region: no-drag;
 }
+
+/* ═══════════════ 雙子星貓 chibi 動態（src/components/pet） ═══════════════ */
+
+.pet-body { transform-origin: 50% 96%; will-change: transform; }
+.pet-enter { animation: pet-enter 0.35s ease-out both; }
+@keyframes pet-enter { from { opacity: 0; transform: scale(0.94); } to { opacity: 1; transform: none; } }
+
+/* ── 身體動畫 ── */
+.pet-anim-float      { animation: pet-float 3.6s ease-in-out infinite; }
+.pet-anim-float-slow { animation: pet-float-lean 4.8s ease-in-out infinite; }
+.pet-anim-squish     { animation: pet-squish 0.55s ease-in-out infinite; }
+.pet-anim-rock       { animation: pet-rock 0.42s ease-in-out infinite; }
+.pet-anim-peek       { animation: pet-peek 5s ease-in-out infinite; }
+.pet-anim-bounce     { animation: pet-bounce 0.62s cubic-bezier(.3,.7,.4,1) infinite; }
+.pet-anim-lean       { animation: pet-lean 1.8s ease-in-out infinite; }
+.pet-anim-shrink     { animation: pet-shrink 3.2s ease-in-out infinite; }
+.pet-anim-stomp      { animation: pet-stomp 0.9s ease-in-out infinite; }
+.pet-anim-proud      { animation: pet-proud 3s ease-in-out infinite; }
+.pet-anim-tilt       { animation: pet-tilt 2.4s ease-in-out infinite; }
+.pet-anim-shy        { animation: pet-shy 2.6s ease-in-out infinite; }
+.pet-anim-talk       { animation: pet-talk 0.28s ease-in-out infinite; }
+
+@keyframes pet-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2.5%); } }
+@keyframes pet-float-lean { 0%,100% { transform: translateY(0) rotate(-1deg); } 50% { transform: translateY(-2%) rotate(1.5deg); } }
+/* 摸頭：縮肩、舒服地上下輕顫 */
+@keyframes pet-squish { 0%,100% { transform: scale(1.03, 0.95); } 50% { transform: scale(0.99, 1.0) translateY(-0.8%); } }
+/* 打遊戲：隨節奏前後晃，偶爾激動 */
+@keyframes pet-rock {
+  0%,100% { transform: rotate(-2deg) translateX(-0.6%); }
+  50% { transform: rotate(2deg) translateX(0.6%) translateY(-0.6%); }
+}
+/* LINE：窩著滑手機，偶爾抬頭偷看主人 */
+@keyframes pet-peek {
+  0%,60%,100% { transform: translateY(0) rotate(0); }
+  70%,85% { transform: translateY(-3%) rotate(-4deg) translateX(-2%); }
+}
+/* 開心：原地蹦跳＋落地壓扁 */
+@keyframes pet-bounce {
+  0%,100% { transform: translateY(0) scale(1.04, 0.95); }
+  40% { transform: translateY(-9%) scale(0.97, 1.04); }
+  70% { transform: translateY(-2%) scale(1, 1); }
+}
+/* 想吃：趴到桌邊探頭，期待地扭動 */
+@keyframes pet-lean { 0%,100% { transform: translateY(14%) scale(1.05) rotate(-1.5deg); } 50% { transform: translateY(12%) scale(1.05) rotate(1.5deg); } }
+/* 悲傷：縮小蹲下、無力地起伏 */
+@keyframes pet-shrink { 0%,100% { transform: scale(0.88) translateY(4%); } 50% { transform: scale(0.87, 0.85) translateY(5%); } }
+/* 生氣：氣得跺腳發抖 */
+@keyframes pet-stomp {
+  0%,100% { transform: translateX(0); }
+  10%,30% { transform: translateX(-1.5%) rotate(-1deg); }
+  20%,40% { transform: translateX(1.5%) rotate(1deg); }
+  60% { transform: translateY(-3%); }
+  70% { transform: translateY(0) scale(1.03, 0.97); }
+}
+/* 驕傲：抬下巴挺胸 */
+@keyframes pet-proud { 0%,100% { transform: rotate(-3deg) scale(1.03) translateY(-1%); } 50% { transform: rotate(-4.5deg) scale(1.05) translateY(-2%); } }
+/* 疑惑：歪頭，眨巴眨巴 */
+@keyframes pet-tilt { 0%,100% { transform: rotate(-8deg); } 50% { transform: rotate(-11deg) translateY(-1%); } }
+/* 愛：害羞地轉頭掩飾 */
+@keyframes pet-shy { 0%,100% { transform: rotate(4deg) translateX(3%); } 50% { transform: rotate(6deg) translateX(4%) translateY(-1.5%); } }
+@keyframes pet-talk { 0%,100% { transform: scale(1, 1); } 50% { transform: scale(1.012, 0.988); } }
+
+/* ── 光暈 ── */
+.pet-aura-pulse { animation: pet-aura-pulse 2.4s ease-in-out infinite; }
+@keyframes pet-aura-pulse { 0%,100% { opacity: 0.7; transform: scale(0.96); } 50% { opacity: 1; transform: scale(1.04); } }
+.pet-aura-rays {
+  background: repeating-conic-gradient(from 0deg, rgba(253,224,71,0.38) 0deg 8deg, transparent 8deg 22deg);
+  -webkit-mask-image: radial-gradient(circle, #000 15%, transparent 68%);
+  mask-image: radial-gradient(circle, #000 15%, transparent 68%);
+  animation: pet-spin 14s linear infinite;
+}
+@keyframes pet-spin { to { transform: rotate(360deg); } }
+
+/* ── 粒子 ── */
+@keyframes pet-p-rise { 0% { transform: translateY(20%) scale(0.4); opacity: 0; } 20% { opacity: 1; } 100% { transform: translateY(-260%) scale(1.1); opacity: 0; } }
+@keyframes pet-p-rise-sway { 0% { transform: translate(0, 20%) rotate(-10deg); opacity: 0; } 20% { opacity: 1; } 50% { transform: translate(60%, -110%) rotate(10deg); } 100% { transform: translate(-30%, -260%) rotate(-10deg); opacity: 0; } }
+@keyframes pet-p-twinkle { 0%,100% { transform: scale(0) rotate(0); opacity: 0; } 50% { transform: scale(1) rotate(45deg); opacity: 1; } }
+@keyframes pet-p-fall { 0% { transform: translateY(-120%); opacity: 0; } 15% { opacity: 1; } 100% { transform: translateY(420%); opacity: 0; } }
+@keyframes pet-p-question { 0%,100% { transform: translateY(0) rotate(-12deg) scale(0.9); } 50% { transform: translateY(-18%) rotate(14deg) scale(1.1); } }
+@keyframes pet-p-throb { 0%,100% { transform: scale(0.85); } 50% { transform: scale(1.15); } }
+@keyframes pet-p-gloom { 0%,100% { opacity: 0.25; } 50% { opacity: 0.85; } }
+@keyframes pet-p-pop { 0%,15% { transform: scale(0); opacity: 0; } 25% { transform: scale(1.2); opacity: 1; } 32%,80% { transform: scale(1); opacity: 1; } 100% { transform: translateY(-30%) scale(0.9); opacity: 0; } }
+
+/* ── 配件細節 ── */
+.pet-blush { animation: pet-aura-pulse 2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.pet-twinkle { animation: pet-blink-soft 0.9s ease-in-out infinite; }
+.pet-led { animation: pet-blink-soft 1.2s ease-in-out infinite; }
+.pet-button { animation: pet-blink-hard 0.5s steps(2) infinite; }
+.pet-glint { animation: pet-blink-soft 2.2s ease-in-out infinite; }
+.pet-holo { animation: pet-float 3s ease-in-out infinite; }
+.pet-holo-line { animation: pet-blink-soft 1.6s ease-in-out infinite; }
+.pet-notebook { animation: pet-float 2.6s ease-in-out infinite; }
+.pet-controller { animation: pet-rock 0.42s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.pet-phone { transform-box: fill-box; transform-origin: center; }
+.pet-scroll { animation: pet-scroll 1.4s linear infinite; }
+.pet-thumb { animation: pet-thumb 0.7s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.pet-tear { animation: pet-tear 1.4s ease-in infinite; transform-box: fill-box; }
+.pet-drool { animation: pet-drool 2.2s ease-in-out infinite; transform-box: fill-box; transform-origin: top; }
+.pet-puff { animation: pet-p-throb 0.8s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.pet-paw { animation: pet-paw 0.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center bottom; }
+.pet-steam { animation: pet-steam 1.6s ease-out infinite; }
+@keyframes pet-blink-soft { 0%,100% { opacity: 0.45; } 50% { opacity: 1; } }
+@keyframes pet-blink-hard { 0% { opacity: 1; } 100% { opacity: 0.25; } }
+@keyframes pet-scroll { from { transform: translateY(0); } to { transform: translateY(-12px); } }
+@keyframes pet-thumb { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-14px); } }
+@keyframes pet-tear { 0% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(40px); opacity: 0; } }
+@keyframes pet-drool { 0%,100% { transform: scaleY(0.6); } 60% { transform: scaleY(1.3); } }
+@keyframes pet-paw { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+@keyframes pet-steam { 0% { opacity: 0; transform: translateY(6px); } 40% { opacity: 0.9; } 100% { opacity: 0; transform: translateY(-14px); } }
+@keyframes pet-sprite-steps { from { transform: translateX(0); } to { transform: translateX(-100%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  [class*="pet-anim-"], [class*="pet-p-"], .pet-aura-rays { animation-duration: 0s !important; }
+}

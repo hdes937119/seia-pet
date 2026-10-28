@@ -226,6 +226,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
 
         const activity: ScreenActivity = {
           category: data.activityCategory || 'video',
+          appContext: data.appContext,
           title: data.activityTitle || '螢幕畫面分析',
           observation: data.observation || '已識別當前畫面細節',
           catComment: data.catComment,

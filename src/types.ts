@@ -40,6 +40,7 @@ export interface DiscoveredVideo {
 
 export interface ScreenActivity {
   category: 'gaming' | 'video' | 'chatting' | 'coding' | 'work' | 'idle';
+  appContext?: 'gaming' | 'gemini_web' | 'line' | 'other'; // 決定桌寵的運作模式
   title: string;
   observation: string;
   catComment: string;

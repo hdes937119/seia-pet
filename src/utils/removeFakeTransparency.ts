@@ -32,7 +32,15 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-export async function removeFakeTransparency(srcDataUrl: string): Promise<ProcessedImage> {
+export interface RemoveOptions {
+  /** 是否清除「被圍住的純白區塊」（貼紙底色）。角色本身有大面積純白衣服時請關掉 */
+  removeWhitePockets?: boolean;
+}
+
+export async function removeFakeTransparency(
+  srcDataUrl: string,
+  { removeWhitePockets = true }: RemoveOptions = {}
+): Promise<ProcessedImage> {
   const img = await loadImage(srcDataUrl);
   const scale = Math.min(1, MAX_DIM / Math.max(img.naturalWidth, img.naturalHeight));
   const w = Math.max(1, Math.round(img.naturalWidth * scale));
@@ -163,7 +171,7 @@ export async function removeFakeTransparency(srcDataUrl: string): Promise<Proces
   // ---- 3.5 被頭髮等圍住、填滿純白的貼紙底色小區塊 ----
   // 這些區塊跟外面不相連、裡面也沒有灰格，所以上面清不到。
   // 白色衣服通常有陰影（不是純白），細長的高光也會被尺寸條件排除。
-  if (removed > 0 && lightBackground) {
+  if (removed > 0 && lightBackground && removeWhitePockets) {
     const isPureWhite = (i: number) => {
       const o = i * 4;
       if (px[o + 3] === 0) return false;
