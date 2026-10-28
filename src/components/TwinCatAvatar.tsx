@@ -12,6 +12,7 @@ import {
   Minimize2,
   Upload,
 } from 'lucide-react';
+import { removeFakeTransparency } from '../utils/removeFakeTransparency';
 
 interface TwinCatAvatarProps {
   isTalking: boolean;
@@ -105,8 +106,16 @@ export const TwinCatAvatar: React.FC<TwinCatAvatarProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
+    reader.onload = async () => {
+      let result = reader.result as string;
+      // GIF 動圖保持原樣（畫到 canvas 會失去動畫）；其他圖片自動去除假透明的棋盤格背景
+      if (file.type !== 'image/gif') {
+        try {
+          result = (await removeFakeTransparency(result)).dataUrl;
+        } catch (err) {
+          console.warn('立繪背景處理失敗，改用原圖:', err);
+        }
+      }
       setCustomImgUrl(result);
       setVisualMode('custom');
       try {
@@ -116,6 +125,7 @@ export const TwinCatAvatar: React.FC<TwinCatAvatarProps> = ({
       }
     };
     reader.readAsDataURL(file);
+    e.target.value = ''; // 允許重新選同一張圖
   };
 
   return (
