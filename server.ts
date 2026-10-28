@@ -7,6 +7,7 @@ import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import dotenv from 'dotenv';
 import { runAutoExplore, type GenerateJson } from './server/explore';
 import { describePersonality, describeTime, type ClientTime, type PersonalityConfig } from './server/persona';
+import { createEventMemory } from './server/eventMemory';
 
 function isGamingActivity(a?: { type?: string; appContext?: string } | null): boolean {
   return a?.type === 'gaming' || a?.appContext === 'gaming';
@@ -19,6 +20,12 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+
+// 桌寵的資料夾（自訂立繪、事件日記）。可用 PET_DATA_DIR 指到別處，例如測試時不要動到真的資料
+const DATA_DIR = process.env.PET_DATA_DIR ? path.resolve(process.env.PET_DATA_DIR) : path.resolve(__dirname, 'data');
+
+// 事件記憶（事件日記），存在 data/memories/events.json
+const eventMemory = createEventMemory(DATA_DIR);
 
 // Allow large payloads for base64 screen vision frames
 app.use(express.json({ limit: '30mb' }));
@@ -269,7 +276,8 @@ function buildSystemPrompt(
   permanentMemories: Array<{ keyword: string; category: string; notes?: string }> = [],
   activeKeywords: Array<{ keyword: string; strength: number }> = [],
   currentActivity?: { type: string; title: string; observation?: string; appContext?: string },
-  clientTime?: ClientTime
+  clientTime?: ClientTime,
+  eventContext = ''
 ) {
   const persona = describePersonality(personality);
   const timeLine = describeTime(clientTime);
@@ -309,12 +317,13 @@ function buildSystemPrompt(
 ${timeLine}
 ${memoryContext}
 ${recentKeywordsContext}
+${eventContext ? `${eventContext}\n（以上是你記得的主人往事。只能根據這些內容提起往事，不要捏造沒發生過的事。）` : ''}
 ${activityContext}
 
 【核心回覆最高原則】：
 1. **絕對以主人最新輸入的內容為主來進行回應**！主人聊什麼你就專心聊什麼。
 2. **多維度記憶調用**：你有上述豐富的長期記憶檔案庫。當主人聊到相關話題時，請**隨機應變地挑選不同領域的記憶**來聊（語氣依照上面的微性格），絕對不要每次聊天都反覆抓同一組關鍵字炒冷飯！
-3. 像真實 LINE 好友一樣自然對話（繁體中文），可自然穿插可愛日系萌音口癖（如「喵～♪」「哈…」），回覆保持精煉生動（2~4句內）。
+3. 像真實 LINE 好友一樣自然對話（繁體中文），可自然穿插可愛日系萌音口癖（如「喵～♪」「哈…」），回覆保持精煉生動（2~4句內）。這是聊天訊息，不要用 Markdown（例如 **粗體**、# 標題、- 清單）。
 4. 若主人這句話出現新的個人喜好/遊戲/飲食/習慣關鍵字，在文末加上隱藏標記：<!--KEYWORDS:[{"keyword":"詞","category":"preference|habit|game|topic","notes":"簡註"}]-->（若無則不加）。
 5. 每次回覆的最後一定要加上一個隱藏的情緒標記，代表你這句話的心情（桌寵會依此切換動作）：<!--EMOTION:情緒-->，情緒只能是 happy、hungry、sad、angry、proud、confused、loving 其中之一（開心/想吃/難過/生氣吐槽/得意/疑惑/害羞喜歡）。`;
 }
@@ -437,12 +446,18 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       return finish('哈…請確認環境中已設定 GEMINI_API_KEY，本喵才能啟動真正的視覺與對話神經元喵！');
     }
 
+    // 事件記憶：到期該追問的事、最近一週的事、跟這句話有關的往事
+    const lastUserText =
+      [...(Array.isArray(messages) ? messages : [])].reverse().find((m: any) => m?.role === 'user')?.content || '';
+    const events = eventMemory.contextFor(String(lastUserText));
+
     const systemPrompt = buildSystemPrompt(
       personality || { sharpTongue: 50, chatty: 60, humorous: 70, tsundere: 60 },
       permanentMemories || [],
       activeKeywords || [],
       currentActivity,
-      clientTime
+      clientTime,
+      events.prompt
     );
     const formattedContents = normalizeChatContents(
       messages || [],
@@ -467,6 +482,8 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     );
 
     const { cleanText, detectedKeywords } = extractKeywords(fullText);
+    // 她真的有在回覆裡關心那件事，才記成「問過了」
+    eventMemory.markAskedIfMentioned(events.dueIds, cleanText);
     send('done', {
       reply: cleanText,
       detectedKeywords,
@@ -777,6 +794,131 @@ app.post('/api/auto-explore', async (req: Request, res: Response) => {
 
 
 
+// 8. 事件記憶（事件日記）
+//    POST   /api/memory/compile     → 把一段對話整理成事件（新增 / 更新舊事件的結果）
+//    GET    /api/memory/events      → 列出所有事件（記憶小筆記「日記」分頁）
+//    PATCH  /api/memory/events/:id  → 手動標成已處理 / 改結果
+//    DELETE /api/memory/events/:id  → 刪掉記錯的事件
+const EVENT_CATEGORIES = ['life', 'work', 'study', 'health', 'game', 'plan', 'emotion', 'other'];
+let compileRunning = false;
+
+/** 「YYYY-MM-DD」+「HH:MM」→ 本機時間的毫秒（後端跑在主人電腦上，時區相同） */
+function toLocalMs(date?: string, time?: string): number | null {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const t = time && /^\d{1,2}:\d{2}$/.test(time) ? time.padStart(5, '0') : '20:00';
+  const ms = new Date(`${date}T${t}:00`).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+app.post('/api/memory/compile', async (req: Request, res: Response) => {
+  if (compileRunning) return res.status(409).json({ error: '日記整理中' });
+  const ai = getAiClient();
+  if (!ai) return res.status(500).json({ error: 'Missing GEMINI_API_KEY' });
+  const { messages, today, clientTime } = req.body || {};
+  if (!Array.isArray(messages) || messages.length === 0) return res.json({ added: [], updated: [] });
+
+  compileRunning = true;
+  try {
+    const openEvents = eventMemory
+      .list()
+      .filter((e) => e.status === 'open')
+      .slice(0, 30);
+    const conversation = messages
+      .slice(-40)
+      .map((m: any) => {
+        const when = m.at ? new Date(m.at).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+        return `[${when}] ${m.role === 'user' ? '主人' : '貓貓'}：${String(m.content || '').slice(0, 200)}`;
+      })
+      .join('\n');
+
+    const prompt = `你是桌寵貓娘的「事件日記」整理員。今天是 ${today}（${clientTime?.label || ''}）。
+請從下面這段主人和貓貓的對話中，找出值得像好朋友一樣記住的「主人生活中的事件」，並更新舊事件的後續。
+
+【已記錄、還沒結束的事件】
+${openEvents.length ? openEvents.map((e) => `- id=${e.id}｜${e.date}｜${e.summary}`).join('\n') : '（無）'}
+
+【新的對話】
+${conversation}
+
+規則：
+1. 只記「主人本人」的事：計畫與行程（面試、考試、出遊、看醫生、截止日）、生活大小事、身體狀況、心情起伏、遊戲進度里程碑。
+   不要記：貓貓說的話、純閒聊、螢幕吐槽、貓貓推薦的影片文章、已經在舊事件裡的重複內容。
+2. 「明天」「下週二」這類相對日期，要依今天的日期換算成實際日期。
+3. 需要事後關心的事（例如面試、考試、比賽、看醫生、生病），給 followUpDate（通常是事件當天晚上或隔天）；不需要追問就給 null。
+4. 如果對話裡提到舊事件的結果（例如「面試過了」），用 updates 把它標成 resolved 並寫下結果；不要為同一件事新增事件。
+5. summary 用繁體中文、以「主人」開頭、25 字內；keyword 是 2~4 字、追問時一定會講到的詞（例如「面試」）。
+6. 沒有值得記的就回傳空陣列，寧缺勿濫。
+
+輸出嚴格 JSON：
+{
+  "newEvents": [{ "date": "YYYY-MM-DD", "summary": "...", "keyword": "...", "category": "${EVENT_CATEGORIES.join(' | ')}", "importance": 1~5, "followUpDate": "YYYY-MM-DD 或 null", "followUpTime": "HH:MM 或 null" }],
+  "updates": [{ "id": "evt_...", "status": "resolved 或 open", "outcome": "後續結果（沒有就省略）" }]
+}`;
+
+    const { response } = await generateSmartContent(
+      ai,
+      [{ role: 'user', parts: [{ text: prompt }] }],
+      { responseMimeType: 'application/json', temperature: 0.2 },
+      'gemini-3-flash-preview'
+    );
+    const parsed = JSON.parse(cleanJsonText(response.text || '{}')) || {};
+
+    const added = eventMemory.add(
+      (Array.isArray(parsed.newEvents) ? parsed.newEvents : [])
+        .filter((e: any) => e && typeof e.summary === 'string' && e.summary.trim())
+        .slice(0, 8)
+        .map((e: any) => ({
+          date: /^\d{4}-\d{2}-\d{2}$/.test(e.date) ? e.date : today,
+          summary: e.summary.trim().slice(0, 60),
+          keyword: String(e.keyword || '').trim().slice(0, 12),
+          category: EVENT_CATEGORIES.includes(e.category) ? e.category : 'other',
+          importance: Math.min(5, Math.max(1, Number(e.importance) || 3)),
+          followUpAt: e.followUpDate && e.followUpDate !== 'null' ? toLocalMs(e.followUpDate, e.followUpTime) : null,
+        }))
+    );
+    const updated = (Array.isArray(parsed.updates) ? parsed.updates : [])
+      .map((u: any) =>
+        u?.id
+          ? eventMemory.update(String(u.id), {
+              ...(u.status === 'resolved' || u.status === 'open' ? { status: u.status } : {}),
+              ...(u.outcome ? { outcome: String(u.outcome).slice(0, 80) } : {}),
+            })
+          : null
+      )
+      .filter(Boolean);
+
+    await eventMemory.save();
+    console.log(`[事件記憶] 整理 ${messages.length} 則對話 → 新增 ${added.length}、更新 ${updated.length}`);
+    return res.json({ added, updated });
+  } catch (err: any) {
+    console.warn('[事件記憶] 整理失敗:', err?.status || err?.message);
+    return res.status(502).json({ error: '日記整理失敗' });
+  } finally {
+    compileRunning = false;
+  }
+});
+
+app.get('/api/memory/events', (req: Request, res: Response) => {
+  res.json({ events: eventMemory.list() });
+});
+
+app.patch('/api/memory/events/:id', async (req: Request, res: Response) => {
+  const { status, outcome } = req.body || {};
+  const ev = eventMemory.update(req.params.id, {
+    ...(status === 'resolved' || status === 'open' ? { status } : {}),
+    ...(typeof outcome === 'string' ? { outcome: outcome.slice(0, 80) } : {}),
+  });
+  if (!ev) return res.status(404).json({ error: '找不到這個事件' });
+  await eventMemory.save();
+  res.json({ event: ev });
+});
+
+app.delete('/api/memory/events/:id', async (req: Request, res: Response) => {
+  if (!eventMemory.remove(req.params.id)) return res.status(404).json({ error: '找不到這個事件' });
+  await eventMemory.save();
+  res.json({ ok: true });
+});
+
 // 7. 主動打招呼（陪伴感）：開啟桌寵 / 主人離開一陣子回來 / 深夜還在用電腦
 app.post('/api/greeting', async (req: Request, res: Response) => {
   try {
@@ -808,14 +950,20 @@ app.post('/api/greeting', async (req: Request, res: Response) => {
           ? `主人剛打開桌寵，你們上次見面是${awayText}前。像朋友見面一樣打招呼。`
           : `主人離開電腦${awayText}，剛剛回來了。像朋友看到他回座位一樣打招呼（可以好奇他剛剛去哪、或歡迎他回來）。`;
 
+    // 事件記憶裡到期該關心的事（例如昨天的面試）→ 優先拿來打招呼
+    const due = reason === 'late_night' ? [] : eventMemory.dueFollowUps(Date.now(), 1);
+
     const extras = [
+      due.length > 0
+        ? `你記得：${due[0].date} ${due[0].summary}。現在是該關心後續的時候了，請直接用「${due[0].keyword}」這個詞問他結果如何。`
+        : '',
       Array.isArray(discoveries) && discoveries.length > 0
         ? `你在主人不在的時候自己上網逛到了：${discoveries
             .slice(0, 3)
             .map((d: any) => `「${d.title}」(${d.sourceLabel})`)
             .join('、')}，可以順口提一句（不用全部講）。`
         : '',
-      lastTopic && reason !== 'late_night'
+      lastTopic && reason !== 'late_night' && due.length === 0
         ? `主人上次跟你說的最後一句話是：「${String(lastTopic).slice(0, 80)}」。如果這是一件會有後續的事（例如面試、考試、看醫生、出遊、比賽、截止日），就像朋友一樣直接關心那件事的結果，而且提到那件事時要沿用主人原本的用詞（例如主人說「面試」就說面試，不要換成別的事）；如果只是閒聊就不用提。`
         : '',
       currentActivity?.title ? `主人目前螢幕上是：「${currentActivity.title}」。` : '',
@@ -844,7 +992,9 @@ ${extras}
     );
     const parsed = JSON.parse(cleanJsonText(response.text || '{}')) || {};
     const emotion = PET_EMOTIONS.includes(parsed.emotion) ? parsed.emotion : 'happy';
-    return res.json({ text: String(parsed.text || '').trim(), emotion });
+    const text = String(parsed.text || '').trim();
+    eventMemory.markAskedIfMentioned(due.map((e) => e.id), text);
+    return res.json({ text, emotion });
   } catch (error: any) {
     console.warn('[打招呼] 失敗:', error?.status || error?.message);
     return res.status(502).json({ error: '打招呼失敗' });
@@ -895,7 +1045,6 @@ app.post('/api/transcribe', async (req: Request, res: Response) => {
 
 // 5. 自訂立繪：存成專案資料夾裡的真實檔案（data/custom-avatar.png），
 //    不再依賴瀏覽器儲存空間（換網址、清快取都不會不見）
-const DATA_DIR = path.resolve(__dirname, 'data');
 const AVATAR_EXTS: Record<string, string> = { png: 'png', gif: 'gif', jpeg: 'jpg', webp: 'webp' };
 const avatarPath = (ext: string) => path.join(DATA_DIR, `custom-avatar.${ext}`);
 const findAvatarFile = () =>

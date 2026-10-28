@@ -17,6 +17,8 @@ interface Options {
   lateNightReminder: boolean;
   /** awayMinutes：離開了幾分鐘；awaySince：從什麼時候開始不在（用來找「不在時」貓貓找到的東西） */
   onGreet: (reason: GreetingReason, awayMinutes: number, awaySince: number) => void;
+  /** 主人剛離開電腦（閒置超過 10 分鐘）時呼叫一次，例如趁空檔整理事件日記 */
+  onAway?: () => void;
 }
 
 const LAST_SEEN_KEY = 'gemini_twin_cat_last_seen';
@@ -44,13 +46,15 @@ function write(key: string, value: string) {
   }
 }
 
-export function useCompanionGreeting({ greetOnReturn, lateNightReminder, onGreet }: Options) {
+export function useCompanionGreeting({ greetOnReturn, lateNightReminder, onGreet, onAway }: Options) {
   const onGreetRef = useRef(onGreet);
+  const onAwayRef = useRef(onAway);
   const optsRef = useRef({ greetOnReturn, lateNightReminder });
   useEffect(() => {
     onGreetRef.current = onGreet;
+    onAwayRef.current = onAway;
     optsRef.current = { greetOnReturn, lateNightReminder };
-  }, [onGreet, greetOnReturn, lateNightReminder]);
+  }, [onGreet, onAway, greetOnReturn, lateNightReminder]);
 
   useEffect(() => {
     const api = (window as any).electronAPI;
@@ -99,6 +103,7 @@ export function useCompanionGreeting({ greetOnReturn, lateNightReminder, onGreet
 
       // 離開 → 回來
       if (idleSec >= AWAY_THRESHOLD_SEC) {
+        if (maxIdleSec < AWAY_THRESHOLD_SEC) onAwayRef.current?.(); // 剛離開
         maxIdleSec = Math.max(maxIdleSec, idleSec);
       } else if (active && maxIdleSec >= AWAY_THRESHOLD_SEC) {
         const awayMinutes = maxIdleSec / 60;

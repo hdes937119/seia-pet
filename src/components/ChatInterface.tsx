@@ -5,7 +5,9 @@ import type { VoiceInputState } from '../hooks/useVoiceInput';
 
 // 把訊息裡的網址變成可點的連結（Electron 裡會由 main.js 交給預設瀏覽器開啟）
 const URL_RE = /(https?:\/\/[^\s]+)/g;
-function renderWithLinks(text: string): React.ReactNode {
+function renderWithLinks(raw: string): React.ReactNode {
+  // 聊天訊息不顯示 Markdown 粗體的星號（模型偶爾還是會加）
+  const text = raw.replace(/\*\*(.+?)\*\*/g, '$1');
   const parts = text.split(URL_RE);
   if (parts.length === 1) return text;
   return parts.map((part, i) =>

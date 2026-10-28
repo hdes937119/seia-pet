@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { BookOpen, Star, Clock, Trash2, Pin, Plus, Sparkles, AlertCircle } from 'lucide-react';
 import { MemoryKeyword } from '../types';
 import { memoryDecayService } from '../services/memoryDecayService';
+import { DiaryList } from './DiaryList';
 
 interface MemoryNotebookModalProps {
   memories: MemoryKeyword[];
@@ -9,7 +10,7 @@ interface MemoryNotebookModalProps {
 }
 
 export const MemoryNotebookModal: React.FC<MemoryNotebookModalProps> = ({ memories, onClose }) => {
-  const [activeTab, setActiveTab] = useState<'permanent' | 'decaying'>('permanent');
+  const [activeTab, setActiveTab] = useState<'permanent' | 'decaying' | 'diary'>('permanent');
   const [newKeyword, setNewKeyword] = useState('');
   const [newNotes, setNewNotes] = useState('');
   const [newCategory, setNewCategory] = useState<MemoryKeyword['category']>('preference');
@@ -78,6 +79,16 @@ export const MemoryNotebookModal: React.FC<MemoryNotebookModalProps> = ({ memori
             >
               <Clock className="w-3.5 h-3.5" />
               <span>動態衰變記憶 ({decayingMemories.length})</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('diary')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                activeTab === 'diary' ? 'bg-purple-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="貓貓記得的「主人發生過的事」，會在適當時間主動關心"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>日記</span>
             </button>
           </div>
 
@@ -152,7 +163,9 @@ export const MemoryNotebookModal: React.FC<MemoryNotebookModalProps> = ({ memori
 
         {/* Content List */}
         <div className="p-4 sm:p-5 overflow-y-auto space-y-3 flex-1">
-          {activeTab === 'permanent' ? (
+          {activeTab === 'diary' ? (
+            <DiaryList />
+          ) : activeTab === 'permanent' ? (
             permanentMemories.length > 0 ? (
               permanentMemories.map((item) => (
                 <div
@@ -265,7 +278,7 @@ export const MemoryNotebookModal: React.FC<MemoryNotebookModalProps> = ({ memori
         <div className="p-3 bg-slate-950/70 border-t border-slate-800 text-xs text-slate-400 flex items-center gap-2">
           <AlertCircle className="w-4 h-4 text-purple-400 shrink-0" />
           <span>
-            關鍵字衰變機制遵循遺忘曲線：少聊的話題隨時間逐漸淡化，常聊（提及 $\ge 4$ 次）即永久銘刻不可刪除。
+            關鍵字衰變機制遵循遺忘曲線：少聊的話題隨時間逐漸淡化，常聊（提及 4 次以上）即永久銘刻不可刪除。
           </span>
         </div>
       </div>

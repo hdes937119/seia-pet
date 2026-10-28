@@ -25,6 +25,7 @@ import { useServerEvents } from './hooks/useServerEvents';
 import { pickPatReaction } from './utils/patReactions';
 import { getClientTime } from './utils/clientTime';
 import { useCompanionGreeting, type GreetingReason } from './hooks/useCompanionGreeting';
+import { useDiaryCompiler } from './hooks/useDiaryCompiler';
 import { useAvatarAppearance } from './hooks/useAvatarAppearance';
 import { useClickThrough } from './hooks/useClickThrough';
 import { ScreenVisionTracker } from './components/ScreenVisionTracker';
@@ -604,10 +605,14 @@ export default function App() {
     }
   };
 
+  // 事件日記：每累積幾句話、或主人離開電腦時，把對話整理成「發生過的事」
+  const diary = useDiaryCompiler(messages, isStreamingOrWaiting);
+
   useCompanionGreeting({
     greetOnReturn: exploreSettings.greetOnReturn,
     lateNightReminder: exploreSettings.lateNightReminder,
     onGreet: (reason, awayMinutes, awaySince) => requestGreeting(reason, awayMinutes, awaySince),
+    onAway: () => diary.compileNow(),
   });
 
   // 5. Ask Twin Cat about a specific discovered video in chat
