@@ -5,4 +5,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 角落把手拖動整個桌寵視窗
   startWindowDrag: () => ipcRenderer.send('window-drag-start'),
   stopWindowDrag: () => ipcRenderer.send('window-drag-stop'),
+  // 語音輸入全域熱鍵：回傳取消訂閱的函式
+  getVoiceHotkey: () => ipcRenderer.invoke('get-voice-hotkey'),
+  onVoiceHotkey: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('voice-hotkey', handler);
+    return () => ipcRenderer.removeListener('voice-hotkey', handler);
+  },
 });

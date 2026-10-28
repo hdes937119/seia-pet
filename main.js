@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, desktopCapturer, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -21,7 +21,9 @@ function createWindow() {
         webPreferences: {
             preload: path.join(__dirname, 'preload.cjs'), // 掛載安全橋樑
             contextIsolation: true,
-            nodeIntegration: false
+            nodeIntegration: false,
+            // 打遊戲時桌寵不在前景，也要讓語音偵測、計時器照常運作
+            backgroundThrottling: false,
         }
     });
 
@@ -69,10 +71,36 @@ ipcMain.on('window-drag-start', (event) => {
 
 ipcMain.on('window-drag-stop', stopWindowDrag);
 
+// 語音輸入全域熱鍵：就算正在打遊戲（桌寵沒有焦點）也能按。
+// 預設 Ctrl+Alt+V，可用環境變數 VOICE_HOTKEY 改，例如 VOICE_HOTKEY=F8
+const VOICE_HOTKEY = process.env.VOICE_HOTKEY || 'Ctrl+Alt+V';
+let registeredVoiceHotkey = null;
+
+ipcMain.handle('get-voice-hotkey', () => registeredVoiceHotkey);
+
+function registerVoiceHotkey() {
+    const ok = globalShortcut.register(VOICE_HOTKEY, () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('voice-hotkey');
+        }
+    });
+    if (ok) {
+        registeredVoiceHotkey = VOICE_HOTKEY;
+        console.log(`[語音] 全域熱鍵 ${VOICE_HOTKEY} 已啟用`);
+    } else {
+        console.log(`[語音] ⚠️ 熱鍵 ${VOICE_HOTKEY} 被其他程式占用，請用 VOICE_HOTKEY 換一組`);
+    }
+}
+
 app.whenReady().then(() => {
     createWindow();
     // 保險：視窗失去焦點時一定停止拖曳
     mainWindow.on('blur', stopWindowDrag);
+    registerVoiceHotkey();
+});
+
+app.on('will-quit', () => {
+    globalShortcut.unregisterAll();
 });
 
 app.on('window-all-closed', () => {

@@ -25,6 +25,8 @@ import {
   GeminiModelOption,
 } from './types';
 import { voiceService } from './services/voiceService';
+import { streamChat, createSentenceSplitter } from './services/chatStream';
+import { useVoiceInput } from './hooks/useVoiceInput';
 import { memoryDecayService } from './services/memoryDecayService';
 import { TwinCatAvatar } from './components/TwinCatAvatar';
 import { ScreenVisionTracker } from './components/ScreenVisionTracker';
@@ -95,7 +97,11 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_MESSAGES);
-      return saved ? JSON.parse(saved) : INITIAL_MESSAGES;
+      if (!saved) return INITIAL_MESSAGES;
+      // 上次關閉時還在串流的訊息，重開後一律視為已結束
+      return (JSON.parse(saved) as ChatMessage[]).map((m) =>
+        m.isStreaming ? { ...m, isStreaming: false } : m
+      );
     } catch {
       return INITIAL_MESSAGES;
     }
@@ -194,18 +200,22 @@ export default function App() {
     }
   }, [preferredModel]);
 
+  // 顯示頭上的對話泡泡（7 秒後自動消失；串流時每段更新都會重新計時）
+  const showBubble = useCallback((text: string) => {
+    setSpeechBubbleText(text);
+    if (bubbleTimeoutRef.current) clearTimeout(bubbleTimeoutRef.current);
+    bubbleTimeoutRef.current = setTimeout(() => {
+      setSpeechBubbleText('');
+    }, 7000);
+  }, []);
+
   // Helper to trigger speech and bubble text
   const triggerSpeak = useCallback(
     (text: string) => {
-      setSpeechBubbleText(text);
-      if (bubbleTimeoutRef.current) clearTimeout(bubbleTimeoutRef.current);
-      bubbleTimeoutRef.current = setTimeout(() => {
-        setSpeechBubbleText('');
-      }, 7000);
-
+      showBubble(text);
       voiceService.speak(text);
     },
-    []
+    [showBubble]
   );
 
   // Instant Interrupt Handler (aborts chat thinking, screen vision analysis, and TTS)
@@ -247,19 +257,35 @@ export default function App() {
     isWaitingRef.current = true;
     setIsStreamingOrWaiting(true);
 
+    // 串流中的貓貓回覆：收到第一段文字時才建立訊息，之後逐段補上
+    const petMsgId = 'msg_pet_' + Date.now();
+    let streamedText = '';
+    let petMsgCreated = false;
+    const splitter = createSentenceSplitter();
+    const timestamp = () =>
+      new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+
+    const upsertPetMsg = (content: string, isStreaming: boolean) => {
+      if (!petMsgCreated) {
+        petMsgCreated = true;
+        setMessages((prev) => [
+          ...prev,
+          { id: petMsgId, role: 'pet', content, timestamp: timestamp(), isRead: true, isStreaming },
+        ]);
+      } else {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === petMsgId ? { ...m, content, isStreaming } : m))
+        );
+      }
+    };
+
     try {
       const permanentMemories = memoryDecayService.getPermanentMemories();
       const activeKeywords = memoryDecayService.getActiveKeywords();
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          messages: nextMessages.map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
+      const data = await streamChat(
+        {
+          messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
           personality,
           permanentMemories,
           activeKeywords,
@@ -273,33 +299,38 @@ export default function App() {
           latestScreenshot: currentActivity?.screenshotUrl,
           latestScreenshotAt: currentActivity?.capturedAt,
           preferredModel,
-        }),
-      });
-
-      const data = await response.json().catch(() => null);
-      if (!response.ok && !data?.reply) {
-        throw new Error(data?.error || '對話連線異常');
-      }
+        },
+        controller.signal,
+        (delta) => {
+          if (controller.signal.aborted) return;
+          streamedText += delta;
+          upsertPetMsg(streamedText, true);
+          showBubble(streamedText);
+          // 每湊滿一句就先交給語音，不用等整段回覆
+          for (const sentence of splitter.push(delta)) voiceService.enqueue(sentence);
+        }
+      );
 
       if (controller.signal.aborted) return;
 
-      const petReply = data?.reply || '哈…本喵聽到了喵～';
+      // 中途斷線但已經講了一半 → 保留已輸出的內容
+      const finalText =
+        data.error && streamedText
+          ? `${streamedText}…（訊號中斷了喵）`
+          : data.reply || streamedText || '哈…本喵聽到了喵～';
+      upsertPetMsg(finalText, false);
+      showBubble(finalText);
 
-      const petMsg: ChatMessage = {
-        id: 'msg_pet_' + Date.now(),
-        role: 'pet',
-        content: petReply,
-        timestamp: new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
-        isRead: true,
-      };
-
-      setMessages((prev) => [...prev, petMsg]);
-
-      // Trigger Voice
-      triggerSpeak(petReply);
+      if (streamedText) {
+        const rest = splitter.flush();
+        if (rest) voiceService.enqueue(rest);
+      } else {
+        // 沒有串流內容（例如沒設定 API key 或錯誤訊息）→ 整段直接講
+        voiceService.speak(finalText);
+      }
 
       // Record any detected keywords into memory decay service
-      if (data?.detectedKeywords && Array.isArray(data.detectedKeywords)) {
+      if (Array.isArray(data.detectedKeywords)) {
         for (const kw of data.detectedKeywords) {
           if (kw.keyword) {
             memoryDecayService.reinforceKeyword(kw.keyword, kw.category, kw.notes);
@@ -308,21 +339,16 @@ export default function App() {
       }
     } catch (err: any) {
       if (err?.name === 'AbortError') {
-        // User intentionally interrupted or sent a newer message — do not show error bubble
+        // 使用者打斷或送出新訊息：保留已經輸出的部分，結束串流狀態
+        if (petMsgCreated) upsertPetMsg(streamedText, false);
         return;
       }
       console.warn('Chat fallback triggered:', err);
-      const errorReply = '哈…本喵的神經突觸剛才打結了喵！請再跟我說一次～';
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: 'msg_err_' + Date.now(),
-          role: 'pet',
-          content: errorReply,
-          timestamp: new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
-        },
-      ]);
-      triggerSpeak(errorReply);
+      const errorReply = streamedText
+        ? `${streamedText}…（訊號中斷了喵）`
+        : '哈…本喵的神經突觸剛才打結了喵！請再跟我說一次～';
+      upsertPetMsg(errorReply, false);
+      if (!streamedText) triggerSpeak(errorReply);
     } finally {
       if (chatAbortRef.current === controller) {
         chatAbortRef.current = null;
@@ -331,6 +357,21 @@ export default function App() {
       }
     }
   };
+
+  // 免持語音輸入：說完自動轉文字並送出；開始收音時先讓貓貓閉嘴，避免麥克風收到她的聲音
+  const voiceInput = useVoiceInput({
+    onResult: (text) => handleSendMessage(text),
+    onStart: () => voiceService.stop(),
+  });
+  const [voiceHotkey, setVoiceHotkey] = useState<string | null>(null);
+
+  // Electron 全域熱鍵：就算正在打遊戲（桌寵不在焦點）也能觸發
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    if (!api?.onVoiceHotkey) return;
+    api.getVoiceHotkey?.().then((label: string | null) => setVoiceHotkey(label));
+    return api.onVoiceHotkey(() => voiceInput.toggle());
+  }, [voiceInput.toggle]);
 
   // 3. Screen Vision Activity Detected — appends real-time video/screen commentary directly into chat
   // unless user is actively waiting on their own typed chat message
@@ -598,6 +639,13 @@ export default function App() {
             permanentMemories={memories.filter((m) => m.isPermanent)}
             currentActivity={currentActivity}
             isStreamingOrWaiting={isStreamingOrWaiting}
+            voiceInputState={voiceInput.state}
+            voiceInputLevel={voiceInput.level}
+            voiceInputError={voiceInput.error}
+            onToggleVoiceInput={voiceInput.toggle}
+            onCancelVoiceInput={voiceInput.cancel}
+            onDismissVoiceInputError={voiceInput.clearError}
+            voiceHotkey={voiceHotkey}
           />
         </div>
       </main>

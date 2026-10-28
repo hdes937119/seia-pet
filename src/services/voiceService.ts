@@ -10,7 +10,10 @@ class VoiceService {
   private audioCtx: AudioContext | null = null;
   private activeSource: AudioBufferSourceNode | null = null;
   private currentAudio: HTMLAudioElement | null = null;
-  private ttsAbort: AbortController | null = null;
+  private ttsAborts = new Set<AbortController>();
+  // 逐句播放佇列：每一句一加入就先開始合成，播放時依序取出
+  private queue: Array<Promise<string | null>> = [];
+  private isPlayingQueue = false;
   // 每次 speak / stop 都會遞增，舊的 TTS 請求回來時就知道自己已經過期
   private speakToken = 0;
 
@@ -184,78 +187,100 @@ class VoiceService {
     }
   }
 
-  public async speak(text: string) {
-    if (!this.isEnabled || typeof window === 'undefined') return;
-
+  /** 打斷目前所有語音，改講這一段 */
+  public speak(text: string) {
     this.stop();
+    this.enqueue(text);
+  }
 
-    // 濾水器：清空特殊符號
-    const cleanText = text
-      .replace(/[*#_`~\[\]\(\)>✦🐾]/g, ' ')
-      .replace(/<!--[\s\S]*?-->/g, '')
-      .replace(/https?:\/\/\S+/g, '')
-      .trim();
-
+  /**
+   * 加到播放佇列尾端（不打斷正在講的話）。
+   * 串流對話時每收到完整一句就呼叫一次：第一句很快就能開口，後面的句子邊播邊合成。
+   */
+  public enqueue(text: string) {
+    if (!this.isEnabled || typeof window === 'undefined') return;
+    const cleanText = VoiceService.cleanForSpeech(text);
     if (!cleanText) return;
 
-    const token = this.speakToken; // stop() 已經遞增過
+    this.queue.push(this.synthesize(cleanText, this.speakToken));
+    if (!this.isPlayingQueue) void this.playQueue(this.speakToken);
+  }
+
+  // 濾水器：清空特殊符號、隱藏標記與網址
+  private static cleanForSpeech(text: string) {
+    return text
+      .replace(/[*#_`~\[\]\(\)>✦🐾]/g, ' ')
+      .replace(/<!--[\s\S]*?(-->|$)/g, '')
+      .replace(/https?:\/\/\S+/g, '')
+      .trim();
+  }
+
+  /** 呼叫後端 GPT-SoVITS 合成一句，回傳 base64 WAV；失敗或被打斷回傳 null */
+  private async synthesize(text: string, token: number): Promise<string | null> {
     const controller = new AbortController();
-    this.ttsAbort = controller;
-
+    this.ttsAborts.add(controller);
     try {
-      if (this.speakingListener) this.speakingListener(true);
-      console.log('[前端] 正在呼叫無月專屬聲帶...');
-
-      // 1. 發送 POST 請求給 Node.js
       const response = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: cleanText }),
+        body: JSON.stringify({ text }),
         signal: controller.signal,
       });
-
-      if (!response.ok) {
-        throw new Error(`後端拒絕連線，狀態碼: ${response.status}`);
-      }
-
-      // 2. 解析後端傳來的 JSON
+      if (!response.ok) throw new Error(`後端拒絕連線，狀態碼: ${response.status}`);
       const data = await response.json();
-
-      // 等待期間被打斷或有更新的語音 → 丟掉這段，避免兩段聲音疊在一起
-      if (token !== this.speakToken) return;
-
-      if (!data || !data.audioBase64) {
-        throw new Error('後端回傳的資料缺少 audioBase64！');
+      if (token !== this.speakToken) return null;
+      return data?.audioBase64 || null;
+    } catch (error: any) {
+      if (error?.name !== 'AbortError' && token === this.speakToken) {
+        console.error('[前端] 呼叫無月聲帶失敗:', error);
       }
+      return null;
+    } finally {
+      this.ttsAborts.delete(controller);
+    }
+  }
 
-      // 3. 把 Base64 組裝成聲音網址並播放
-      const audio = new Audio(`data:audio/wav;base64,${data.audioBase64}`);
+  private playAudio(base64: string, token: number): Promise<void> {
+    return new Promise((resolve) => {
+      if (token !== this.speakToken) return resolve();
+      const audio = new Audio(`data:audio/wav;base64,${base64}`);
       audio.volume = this.volume;
       this.currentAudio = audio;
-
-      const finish = () => {
+      const done = () => {
         if (this.currentAudio === audio) this.currentAudio = null;
-        if (token === this.speakToken && this.speakingListener) this.speakingListener(false);
+        resolve();
       };
-      audio.onended = finish;
-      audio.onerror = finish;
+      audio.onended = done;
+      audio.onerror = done;
+      audio.onpause = done; // stop() 會 pause
+      audio.play().catch(done);
+    });
+  }
 
-      await audio.play();
-    } catch (error: any) {
-      if (error?.name === 'AbortError' || token !== this.speakToken) return;
-      console.error('[前端] 呼叫無月聲帶失敗:', error);
-      if (this.speakingListener) this.speakingListener(false);
+  private async playQueue(token: number) {
+    this.isPlayingQueue = true;
+    if (this.speakingListener) this.speakingListener(true);
+    try {
+      while (this.queue.length > 0 && token === this.speakToken) {
+        const base64 = await this.queue.shift()!;
+        if (token !== this.speakToken) return;
+        if (base64) await this.playAudio(base64, token);
+      }
     } finally {
-      if (this.ttsAbort === controller) this.ttsAbort = null;
+      // 被 stop() 打斷時，stop() 已經處理好狀態，這裡不要覆蓋新的播放
+      if (token === this.speakToken) {
+        this.isPlayingQueue = false;
+        if (this.speakingListener) this.speakingListener(false);
+      }
     }
   }
 
   public stop() {
     this.speakToken++;
-    if (this.ttsAbort) {
-      this.ttsAbort.abort();
-      this.ttsAbort = null;
-    }
+    this.queue = [];
+    this.isPlayingQueue = false;
+    this.ttsAborts.forEach((c) => c.abort());
+    this.ttsAborts.clear();
     if (this.currentAudio) {
       this.currentAudio.pause();
       this.currentAudio = null;

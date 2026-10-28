@@ -52,6 +52,29 @@ function isAbortError(err: any) {
   return err?.name === 'AbortError' || err?.name === 'APIUserAbortError';
 }
 
+const DEFAULT_CASCADE = [
+  'gemini-3-flash-preview',
+  'gemini-3.1-flash-lite-preview',
+  'gemini-3.5-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash-lite',
+  'gemini-flash-lite-latest',
+  'gemini-3.6-flash',
+];
+
+// 依偏好排出要嘗試的模型順序（Auto 模式時，優先用上次成功的模型）
+function modelsToTryFor(preferredModel?: string) {
+  const head =
+    preferredModel && preferredModel !== 'auto' ? preferredModel : lastWorkingModel;
+  const ordered = head ? [head, ...DEFAULT_CASCADE.filter((m) => m !== head)] : DEFAULT_CASCADE;
+  return ordered.filter((m) => !missingModels.has(m));
+}
+
+function thinkingConfigFor(model: string) {
+  const isProOrArgon = model.includes('pro') || model.includes('argon') || model.includes('3.8');
+  return isProOrArgon ? { thinkingLevel: ThinkingLevel.LOW } : { thinkingBudget: 0 };
+}
+
 async function generateSmartContent(
   ai: GoogleGenAI,
   contents: any,
@@ -59,31 +82,14 @@ async function generateSmartContent(
   preferredModel?: string,
   abortSignal?: AbortSignal
 ): Promise<{ response: any; usedModel: string }> {
-  const defaultCascade = [
-    'gemini-3-flash-preview',
-    'gemini-3.1-flash-lite-preview',
-    'gemini-3.5-flash',
-    'gemini-3.1-flash-lite',
-    'gemini-3.5-flash-lite',
-    'gemini-flash-lite-latest',
-    'gemini-3.6-flash',
-  ];
-
-  // Auto 模式時，優先用上次成功的模型
-  const head =
-    preferredModel && preferredModel !== 'auto' ? preferredModel : lastWorkingModel;
-  const ordered = head ? [head, ...defaultCascade.filter((m) => m !== head)] : defaultCascade;
-  const modelsToTry = ordered.filter((m) => !missingModels.has(m));
+  const modelsToTry = modelsToTryFor(preferredModel);
 
   let lastError: any = null;
 
   for (const model of modelsToTry) {
     if (abortSignal?.aborted) throw new DOMException('Client disconnected', 'AbortError');
 
-    const isProOrArgon = model.includes('pro') || model.includes('argon') || model.includes('3.8');
-    const thinkingConfig = isProOrArgon
-      ? { thinkingLevel: ThinkingLevel.LOW }
-      : { thinkingBudget: 0 };
+    const thinkingConfig = thinkingConfigFor(model);
     const skipThinking = noThinkingConfigModels.has(model);
     const baseConfig = { ...config, abortSignal };
 
@@ -129,6 +135,111 @@ async function generateSmartContent(
   }
 
   throw lastError || new Error('All Gemini models exhausted');
+}
+
+/**
+ * 串流版的模型輪替：逐一嘗試模型，直到某個模型成功吐出第一段文字。
+ * 一旦開始輸出就不再切換模型（文字已經送到前端了），中途出錯直接拋出。
+ */
+async function streamSmartContent(
+  ai: GoogleGenAI,
+  contents: any,
+  config: Record<string, any>,
+  preferredModel: string | undefined,
+  abortSignal: AbortSignal,
+  onText: (text: string) => void
+): Promise<{ usedModel: string; fullText: string }> {
+  let lastError: any = null;
+
+  for (const model of modelsToTryFor(preferredModel)) {
+    if (abortSignal.aborted) throw new DOMException('Client disconnected', 'AbortError');
+
+    const attempts: Array<Record<string, any>> = [];
+    const baseConfig = { ...config, abortSignal };
+    if (!noThinkingConfigModels.has(model)) {
+      attempts.push({ ...baseConfig, thinkingConfig: thinkingConfigFor(model) });
+    }
+    attempts.push(baseConfig);
+
+    for (let a = 0; a < attempts.length; a++) {
+      let started = false;
+      let fullText = '';
+      try {
+        const stream = await ai.models.generateContentStream({ model, contents, config: attempts[a] });
+        for await (const chunk of stream) {
+          const text = chunk.text || '';
+          if (!text) continue;
+          started = true;
+          fullText += text;
+          onText(text);
+        }
+        if (!started) throw new Error(`模型 ${model} 沒有回傳任何文字`);
+        if (a > 0) noThinkingConfigModels.add(model);
+        lastWorkingModel = model;
+        return { usedModel: model, fullText };
+      } catch (err: any) {
+        if (isAbortError(err) || abortSignal.aborted) throw err;
+        if (started) throw err; // 已經輸出一半，不能換模型
+        lastError = err;
+        if (err?.status === 404) {
+          console.warn(`[Gemini] 模型 ${model} 不存在，之後會略過`);
+          missingModels.add(model);
+          break;
+        }
+        // 400 → 下一輪不帶 thinkingConfig 重試；其他錯誤（例如 429 限流）→ 換下一個模型
+        if (err?.status !== 400) break;
+      }
+    }
+  }
+
+  throw lastError || new Error('All Gemini models exhausted');
+}
+
+/**
+ * 從串流文字中藏住 <!--KEYWORDS:...--> 標記：
+ * 只輸出標記之前的內容，並保留結尾可能是標記開頭的幾個字元（例如 "<!-"），等下一段再判斷。
+ */
+function createKeywordFilter() {
+  const MARKER = '<!--';
+  let raw = '';
+  let emitted = 0;
+  return {
+    push(text: string): string {
+      raw += text;
+      let visibleEnd = raw.indexOf(MARKER);
+      if (visibleEnd === -1) {
+        visibleEnd = raw.length;
+        for (let k = Math.min(MARKER.length - 1, raw.length); k > 0; k--) {
+          if (MARKER.startsWith(raw.slice(-k))) {
+            visibleEnd = raw.length - k;
+            break;
+          }
+        }
+      }
+      if (visibleEnd <= emitted) return '';
+      const out = raw.slice(emitted, visibleEnd);
+      emitted = visibleEnd;
+      return out;
+    },
+    get raw() {
+      return raw;
+    },
+  };
+}
+
+function extractKeywords(rawText: string): { cleanText: string; detectedKeywords: any[] } {
+  let detectedKeywords: any[] = [];
+  const match = rawText.match(/<!--KEYWORDS:([\s\S]*?)-->/);
+  if (match && match[1]) {
+    try {
+      detectedKeywords = JSON.parse(match[1].trim());
+    } catch {
+      // ignore parsing error
+    }
+  }
+  // 不論 JSON 是否解析成功，都把標記從回覆中拿掉
+  const cleanText = rawText.replace(/<!--[\s\S]*?(-->|$)/g, '').trim();
+  return { cleanText, detectedKeywords };
 }
 
 // 前端中斷（打斷 / 關閉）時，同步取消後端的 Gemini 請求，避免白白消耗額度
@@ -297,9 +408,29 @@ function normalizeChatContents(
   return normalized;
 }
 
-// 1. Chat API Endpoint (Multimodal-aware + Real Gemini Response)
+// 1. Chat API Endpoint — Server-Sent Events 串流
+//    事件：delta {text}（逐段文字）、done {reply, detectedKeywords, usedModel, latencyMs, firstTokenMs}
 app.post('/api/chat', async (req: Request, res: Response) => {
   const startTime = Date.now();
+  const abort = abortOnClientClose(req, res);
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.flushHeaders();
+  const send = (event: string, data: unknown) => {
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    }
+  };
+  const finish = (reply: string, extra: Record<string, unknown> = {}) => {
+    send('done', { reply, detectedKeywords: [], latencyMs: Date.now() - startTime, ...extra });
+    res.end();
+  };
+
   try {
     const {
       messages,
@@ -311,7 +442,11 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       latestScreenshotAt,
       preferredModel,
     } = req.body;
-    const abort = abortOnClientClose(req, res);
+
+    const ai = getAiClient();
+    if (!ai) {
+      return finish('哈…請確認環境中已設定 GEMINI_API_KEY，本喵才能啟動真正的視覺與對話神經元喵！');
+    }
 
     const systemPrompt = buildSystemPrompt(
       personality || { sharpTongue: 50, chatty: 60, humorous: 70, tsundere: 60 },
@@ -319,61 +454,40 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       activeKeywords || [],
       currentActivity
     );
-
     const formattedContents = normalizeChatContents(
       messages || [],
       latestScreenshot,
       latestScreenshotAt
     );
-    const ai = getAiClient();
 
-    if (!ai) {
-      return res.json({
-        reply: '哈…請確認環境中已設定 GEMINI_API_KEY，本喵才能啟動真正的視覺與對話神經元喵！',
-        detectedKeywords: [],
-        latencyMs: Date.now() - startTime,
-      });
-    }
-
-    const { response, usedModel } = await generateSmartContent(
+    const filter = createKeywordFilter();
+    let firstTokenMs: number | null = null;
+    const { usedModel, fullText } = await streamSmartContent(
       ai,
       formattedContents,
-      {
-        systemInstruction: systemPrompt,
-        temperature: 0.9,
-      },
+      { systemInstruction: systemPrompt, temperature: 0.9 },
       preferredModel,
-      abort.signal
+      abort.signal,
+      (text) => {
+        if (firstTokenMs === null) firstTokenMs = Date.now() - startTime;
+        const visible = filter.push(text);
+        if (visible) send('delta', { text: visible });
+      }
     );
 
-    const rawText = response.text || '';
-
-    let detectedKeywords: any[] = [];
-    const match = rawText.match(/<!--KEYWORDS:([\s\S]*?)-->/);
-    let cleanText = rawText;
-    if (match && match[1]) {
-      try {
-        detectedKeywords = JSON.parse(match[1].trim());
-        cleanText = rawText.replace(/<!--KEYWORDS:[\s\S]*?-->/g, '').trim();
-      } catch {
-        // ignore parsing error
-      }
-    }
-
-    return res.json({
+    const { cleanText, detectedKeywords } = extractKeywords(fullText);
+    send('done', {
       reply: cleanText,
       detectedKeywords,
       usedModel,
+      firstTokenMs,
       latencyMs: Date.now() - startTime,
     });
+    res.end();
   } catch (error: any) {
-    if (res.headersSent || res.writableEnded || res.destroyed) return;
+    if (res.writableEnded || res.destroyed || abort.signal.aborted) return;
     console.warn('Chat API fallback used:', error?.status || error?.message);
-    return res.status(200).json({
-      reply: `哈…本喵剛才切換頻道時閃了一下喵～主人剛才說什麼？再跟本喵說一次嘛♪`,
-      detectedKeywords: [],
-      latencyMs: Date.now() - startTime,
-    });
+    finish('哈…本喵剛才切換頻道時閃了一下喵～主人剛才說什麼？再跟本喵說一次嘛♪', { error: true });
   }
 });
 
@@ -615,6 +729,48 @@ app.post('/api/idle-explore', async (req: Request, res: Response) => {
 });
 
 
+
+// 6. 語音轉文字（Hands-free STT）：前端錄好 16kHz WAV，交給 Gemini 逐字轉寫
+//    （Electron 不支援 Web Speech API 的 Google 雲端辨識，所以改用 Gemini）
+app.post('/api/transcribe', async (req: Request, res: Response) => {
+  const startTime = Date.now();
+  try {
+    const { audio, mimeType } = req.body || {};
+    if (!audio || typeof audio !== 'string') return res.status(400).json({ error: 'audio required' });
+    const ai = getAiClient();
+    if (!ai) return res.status(500).json({ error: 'Missing GEMINI_API_KEY' });
+    const abort = abortOnClientClose(req, res);
+
+    const { response, usedModel } = await generateSmartContent(
+      ai,
+      [
+        {
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: mimeType || 'audio/wav', data: audio } },
+            {
+              text:
+                '請把這段錄音逐字轉寫成文字。中文一律用繁體中文，英文、遊戲名稱與專有名詞保持原文。' +
+                '只輸出說話內容本身，不要加引號、說明或標點以外的任何東西。' +
+                '如果錄音裡沒有清楚的人聲（只有雜音、遊戲音效或音樂），請只輸出空字串。',
+            },
+          ],
+        },
+      ],
+      { temperature: 0 },
+      // 轉寫不需要聊天用的大模型，優先用最快的 Flash Lite（不能用時才輪替其他模型）
+      'gemini-3.1-flash-lite-preview',
+      abort.signal
+    );
+
+    const text = (response.text || '').trim().replace(/^["「『]|["」』]$/g, '');
+    return res.json({ text, usedModel, latencyMs: Date.now() - startTime });
+  } catch (error: any) {
+    if (res.headersSent || res.writableEnded || res.destroyed) return;
+    console.warn('[STT] 轉寫失敗:', error?.status || error?.message);
+    return res.status(502).json({ error: '語音轉寫失敗', text: '' });
+  }
+});
 
 // 5. 自訂立繪：存成專案資料夾裡的真實檔案（data/custom-avatar.png），
 //    不再依賴瀏覽器儲存空間（換網址、清快取都不會不見）

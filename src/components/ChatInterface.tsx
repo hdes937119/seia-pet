@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Sparkles, Smile, Volume2, VolumeX, Trash2, ArrowLeftRight, CheckCheck, Square } from 'lucide-react';
+import { Send, Sparkles, Smile, Volume2, VolumeX, Trash2, ArrowLeftRight, CheckCheck, Square, Mic, Loader2, X } from 'lucide-react';
 import { ChatMessage, ChatStyle, PersonalityConfig, MemoryKeyword, ScreenActivity } from '../types';
-import { voiceService } from '../services/voiceService';
+import type { VoiceInputState } from '../hooks/useVoiceInput';
 
 interface ChatInterfaceProps {
   messages: ChatMessage[];
@@ -16,6 +16,13 @@ interface ChatInterfaceProps {
   permanentMemories: MemoryKeyword[];
   currentActivity?: ScreenActivity | null;
   isStreamingOrWaiting: boolean;
+  voiceInputState?: VoiceInputState;
+  voiceInputLevel?: number;
+  voiceInputError?: string | null;
+  onToggleVoiceInput?: () => void;
+  onCancelVoiceInput?: () => void;
+  onDismissVoiceInputError?: () => void;
+  voiceHotkey?: string | null;
 }
 
 export const ChatInterface: React.FC<ChatInterfaceProps> = ({
@@ -31,15 +38,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   permanentMemories,
   currentActivity,
   isStreamingOrWaiting,
+  voiceInputState = 'idle',
+  voiceInputLevel = 0,
+  voiceInputError,
+  onToggleVoiceInput,
+  onCancelVoiceInput,
+  onDismissVoiceInputError,
+  voiceHotkey,
 }) => {
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Auto scroll to latest message
+  // Auto scroll to latest message（串流中逐字更新時用 auto，避免平滑捲動一直排隊造成抖動）
+  const lastMsg = messages[messages.length - 1];
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isStreamingOrWaiting]);
+    messagesEndRef.current?.scrollIntoView({ behavior: lastMsg?.isStreaming ? 'auto' : 'smooth' });
+  }, [messages, isStreamingOrWaiting, lastMsg?.isStreaming]);
 
   const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -190,7 +205,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     : 'bg-slate-800/90 text-slate-100 rounded-bl-xs border border-slate-700'
                 }`}
               >
-                <p className="whitespace-pre-wrap">{msg.content}</p>
+                <p className="whitespace-pre-wrap">
+                  {msg.content}
+                  {msg.isStreaming && (
+                    <span className="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-purple-300 animate-pulse rounded-sm" />
+                  )}
+                </p>
               </div>
 
               {/* Timestamps & LINE Read Receipt */}
@@ -206,8 +226,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           );
         })}
 
-        {/* Typing indicator with instant interrupt button */}
-        {isStreamingOrWaiting && (
+        {/* Typing indicator with instant interrupt button（文字開始串流後就不再顯示） */}
+        {isStreamingOrWaiting && !messages[messages.length - 1]?.isStreaming && (
           <div className="flex items-end gap-2 justify-start">
             <div className="w-8 h-8 rounded-full overflow-hidden border border-indigo-400/50 shrink-0">
               <img
@@ -283,6 +303,49 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       )}
 
+      {/* Voice input status strip */}
+      {(voiceInputState !== 'idle' || voiceInputError) && (
+        <div className="px-3 py-1.5 bg-slate-950 border-t border-slate-800 flex items-center gap-2 text-[11px]">
+          {voiceInputState === 'listening' && (
+            <>
+              <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0" />
+              <span className="text-rose-200 shrink-0">正在聽…說完停一下會自動送出</span>
+              <div className="flex-1 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-emerald-400 to-rose-400 transition-[width] duration-75"
+                  style={{ width: `${Math.round(voiceInputLevel * 100)}%` }}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={onCancelVoiceInput}
+                className="shrink-0 px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300"
+              >
+                取消
+              </button>
+            </>
+          )}
+          {voiceInputState === 'transcribing' && (
+            <>
+              <Loader2 className="w-3.5 h-3.5 text-purple-300 animate-spin" />
+              <span className="text-purple-200">語音轉文字中…</span>
+            </>
+          )}
+          {voiceInputState === 'idle' && voiceInputError && (
+            <>
+              <span className="text-amber-300 flex-1">🎙️ {voiceInputError}</span>
+              <button
+                type="button"
+                onClick={onDismissVoiceInputError}
+                className="p-0.5 rounded text-slate-400 hover:text-slate-200"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Bottom Message Input Box — Always enabled so user can interrupt anytime */}
       <form
         onSubmit={handleSend}
@@ -296,6 +359,30 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         >
           <Smile className="w-5 h-5" />
         </button>
+
+        {onToggleVoiceInput && (
+          <button
+            type="button"
+            onClick={onToggleVoiceInput}
+            disabled={voiceInputState === 'transcribing'}
+            className={`p-2 rounded-xl transition-colors disabled:opacity-60 ${
+              voiceInputState === 'listening'
+                ? 'bg-rose-600 text-white animate-pulse'
+                : 'text-slate-400 hover:text-purple-300 hover:bg-slate-800'
+            }`}
+            title={
+              voiceInputState === 'listening'
+                ? '正在聽，再按一次立即送出'
+                : `語音輸入${voiceHotkey ? `（全域熱鍵 ${voiceHotkey}，打遊戲時也能用）` : ''}`
+            }
+          >
+            {voiceInputState === 'transcribing' ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <Mic className="w-5 h-5" />
+            )}
+          </button>
+        )}
 
         <input
           type="text"

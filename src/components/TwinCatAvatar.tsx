@@ -6,7 +6,6 @@ import {
   Volume2,
   VolumeX,
   Eye,
-  Image as ImageIcon,
   Wand2,
   Maximize2,
   Minimize2,
@@ -27,7 +26,8 @@ interface TwinCatAvatarProps {
   onPetHead?: () => void;
 }
 
-type VisualMode = 'mv_portrait' | 'mv_full' | 'live_rig' | 'custom';
+type VisualMode = 'mv_full' | 'live_rig' | 'custom';
+const VISUAL_MODES: VisualMode[] = ['mv_full', 'live_rig', 'custom'];
 
 export const TwinCatAvatar: React.FC<TwinCatAvatarProps> = ({
   isTalking,
@@ -38,12 +38,13 @@ export const TwinCatAvatar: React.FC<TwinCatAvatarProps> = ({
   onOpenChat,
   onPetHead,
 }) => {
-  // 記住上次選的立繪模式，重開後維持一樣
+  // 記住上次選的立繪模式，重開後維持一樣；預設（或舊的「原片立繪」）優先顯示自訂立繪
   const [visualMode, setVisualMode] = useState<VisualMode>(() => {
     try {
-      return (localStorage.getItem(VISUAL_MODE_KEY) as VisualMode) || 'mv_portrait';
+      const saved = localStorage.getItem(VISUAL_MODE_KEY) as VisualMode | null;
+      return saved && VISUAL_MODES.includes(saved) ? saved : 'custom';
     } catch {
-      return 'mv_portrait';
+      return 'custom';
     }
   });
   const [isBlinking, setIsBlinking] = useState(false);
@@ -56,7 +57,7 @@ export const TwinCatAvatar: React.FC<TwinCatAvatarProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 啟動時從 IndexedDB 載入自訂立繪
+  // 啟動時從後端（data/custom-avatar.*）載入自訂立繪
   useEffect(() => {
     let cancelled = false;
     loadCustomAvatar().then((url) => {
@@ -69,11 +70,11 @@ export const TwinCatAvatar: React.FC<TwinCatAvatarProps> = ({
     };
   }, []);
 
-  // 記住目前模式；若選了「自訂」但圖不見了，退回原片立繪
+  // 記住目前模式；若選了「自訂」但還沒有自訂圖，退回原片全景
   useEffect(() => {
     if (!avatarLoaded) return;
     if (visualMode === 'custom' && !customImgUrl) {
-      setVisualMode('mv_portrait');
+      setVisualMode('mv_full');
       return;
     }
     try {
@@ -172,20 +173,6 @@ export const TwinCatAvatar: React.FC<TwinCatAvatarProps> = ({
       {/* Mode Selector Bar */}
       <div className="w-full flex items-center justify-between gap-1.5 mb-3 px-1">
         <div className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
-          <button
-            type="button"
-            onClick={() => setVisualMode('mv_portrait')}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
-              visualMode === 'mv_portrait'
-                ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-            title="原片《雙子星貓》星穹領航員特寫"
-          >
-            <ImageIcon className="w-3 h-3" />
-            <span>原片立繪</span>
-          </button>
-
           <button
             type="button"
             onClick={() => setVisualMode('mv_full')}
@@ -315,66 +302,7 @@ export const TwinCatAvatar: React.FC<TwinCatAvatarProps> = ({
           )}
         </div>
 
-        {/* === MODE 1: ORIGINAL MV PORTRAIT (High-Res Character Focus from BV1qCnJ6TEJB) === */}
-        {visualMode === 'mv_portrait' && (
-          <div className="relative w-full h-72 sm:h-80 rounded-2xl overflow-hidden border-2 border-indigo-500/40 shadow-[0_0_35px_rgba(99,102,241,0.3)] bg-[#141852]">
-            <img
-              src="/bili_cover.jpg"
-              alt="星穹領航員 雙子星貓"
-              referrerPolicy="no-referrer"
-              className="w-full h-full object-cover object-[58%_22%] scale-125 transition-transform duration-700 group-hover:scale-[1.32]"
-            />
-
-            {/* Animated Speaking Glow & Cat Paw Star Aura */}
-            {isTalking && (
-              <motion.div
-                animate={{ opacity: [0.35, 0.85, 0.35] }}
-                transition={{ repeat: Infinity, duration: 0.45 }}
-                className="absolute inset-0 rounded-2xl ring-4 ring-inset ring-amber-300/70 pointer-events-none bg-gradient-to-t from-pink-500/20 via-transparent to-amber-300/15"
-              />
-            )}
-
-            {/* Animated Floating 4-Pointed Stars Overlay */}
-            <motion.div
-              animate={{ rotate: 360, scale: [1, 1.2, 1] }}
-              transition={{
-                rotate: { repeat: Infinity, duration: 12, ease: 'linear' },
-                scale: { repeat: Infinity, duration: 2.2, ease: 'easeInOut' },
-              }}
-              className="absolute top-4 right-4 pointer-events-none text-amber-300 drop-shadow-[0_0_10px_rgba(253,224,71,0.95)]"
-            >
-              ✦
-            </motion.div>
-
-            {/* Bottom Character Lyric Subtitle Banner */}
-            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/95 via-slate-950/60 to-transparent pt-8 pb-3 px-4 flex items-end justify-between">
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="inline-block w-2 h-2 rounded-full bg-pink-500" title="左眼：星辰粉" />
-                  <span className="inline-block w-2 h-2 rounded-full bg-amber-400" title="右眼：耀光金" />
-                  <span className="text-xs font-bold text-white tracking-wide">
-                    藍紫長髮 · 粉金異色瞳 · 四芒星髮飾
-                  </span>
-                </div>
-                <p className="text-[11px] text-indigo-200/90 mt-0.5">
-                  「穿梭信息海跳，替你解煩惱喵～」
-                </p>
-              </div>
-
-              {/* Voice Waveform Indicator when speaking */}
-              {isTalking && (
-                <div className="flex items-end gap-0.5 h-5 px-2 py-1 rounded-lg bg-pink-500/20 border border-pink-400/40">
-                  <span className="w-1 bg-amber-300 rounded-full animate-bounce h-2" />
-                  <span className="w-1 bg-pink-400 rounded-full animate-bounce h-4" style={{ animationDelay: '100ms' }} />
-                  <span className="w-1 bg-sky-300 rounded-full animate-bounce h-3" style={{ animationDelay: '200ms' }} />
-                  <span className="w-1 bg-amber-300 rounded-full animate-bounce h-4" style={{ animationDelay: '300ms' }} />
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* === MODE 2: ORIGINAL MV FULL 16:9 STAGE VIEW === */}
+        {/* === ORIGINAL MV FULL 16:9 STAGE VIEW === */}
         {visualMode === 'mv_full' && (
           <div className="relative w-full aspect-video rounded-2xl overflow-hidden border-2 border-indigo-500/40 shadow-[0_0_35px_rgba(99,102,241,0.3)] bg-[#141852]">
             <img

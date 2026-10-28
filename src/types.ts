@@ -24,6 +24,7 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   isRead?: boolean;
+  isStreaming?: boolean; // AI 回覆還在逐字輸出中
 }
 
 export interface DiscoveredVideo {
