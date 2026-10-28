@@ -5,7 +5,13 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import dotenv from 'dotenv';
-import { runAutoExplore, type GenerateJson } from './server/explore';
+import {
+  runAutoExplore,
+  parsePttBoards,
+  parseBahamutBoards,
+  parseSubreddits,
+  type GenerateJson,
+} from './server/explore';
 import { describePersonality, describeTime, type ClientTime, type PersonalityConfig } from './server/persona';
 import { createEventMemory } from './server/eventMemory';
 import { createRelationship, LEVELS } from './server/relationship';
@@ -787,7 +793,18 @@ app.post('/api/auto-explore', async (req: Request, res: Response) => {
   const ai = getAiClient();
   if (!ai) return res.status(500).json({ error: 'Missing GEMINI_API_KEY' });
 
-  const { personality, petInterests, memoryInterests, recentUrls, preferredModel, reason } = req.body || {};
+  const {
+    personality,
+    petInterests,
+    memoryInterests,
+    recentUrls,
+    preferredModel,
+    reason,
+    sources,
+    pttBoards,
+    bahamutBoards,
+    subreddits,
+  } = req.body || {};
   const generateJson: GenerateJson = async (prompt, opts) => {
     const { response } = await generateSmartContent(
       ai,
@@ -805,7 +822,16 @@ app.post('/api/auto-explore', async (req: Request, res: Response) => {
     const startedAt = Date.now();
     try {
       const discovery = await runAutoExplore(
-        { personality, petInterests, memoryInterests, recentUrls },
+        {
+          personality,
+          petInterests,
+          memoryInterests,
+          recentUrls,
+          sources: sources && typeof sources === 'object' ? sources : undefined,
+          pttBoards: parsePttBoards(pttBoards),
+          bahamutBoards: parseBahamutBoards(bahamutBoards),
+          subreddits: parseSubreddits(subreddits),
+        },
         generateJson,
         (msg) => console.log(msg)
       );

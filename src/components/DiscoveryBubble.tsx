@@ -14,6 +14,8 @@ const SOURCE_STYLE: Record<Discovery['source'], string> = {
   news: 'bg-amber-500/90',
   reddit: 'bg-orange-500/90',
   hn: 'bg-orange-600/90',
+  ptt: 'bg-indigo-700/90',
+  bahamut: 'bg-sky-600/90',
 };
 
 const SOURCE_ICON: Record<Discovery['source'], string> = {
@@ -22,6 +24,8 @@ const SOURCE_ICON: Record<Discovery['source'], string> = {
   news: '📰',
   reddit: '👽',
   hn: 'Y',
+  ptt: '💬',
+  bahamut: '🐉',
 };
 
 interface DiscoveryBubbleProps {

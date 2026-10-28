@@ -161,10 +161,17 @@ export default function App() {
       petInterests: '',
       greetOnReturn: true,
       lateNightReminder: true,
+      sources: { youtube: true, wiki: true, news: true, reddit: true, hn: true, ptt: true, bahamut: true },
+      pttBoards: 'C_Chat, Steam, PlayStation, PC_Shopping, movie, joke',
+      bahamutBoards: '流亡黯道 18966、原神 36730、英雄聯盟 17532、魔物獵人 5786、Nintendo Switch 31587、電腦應用綜合討論 60030',
+      subreddits: '',
     };
     try {
       const saved = localStorage.getItem(STORAGE_KEY_EXPLORE);
-      return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+      if (!saved) return defaults;
+      const parsed = JSON.parse(saved);
+      // 新增的來源開關要補上預設值（舊設定裡沒有）
+      return { ...defaults, ...parsed, sources: { ...defaults.sources, ...(parsed.sources || {}) } };
     } catch {
       return defaults;
     }
@@ -516,6 +523,10 @@ export default function App() {
       .slice(0, 8)
       .map((m) => m.keyword),
     recentUrls: videos.slice(0, 40).map((v) => v.url || v.searchKeyword).filter(Boolean),
+    sources: exploreSettings.sources,
+    pttBoards: exploreSettings.pttBoards,
+    bahamutBoards: exploreSettings.bahamutBoards,
+    subreddits: exploreSettings.subreddits,
     preferredModel,
     reason,
   });

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Cpu, Image as ImageIcon, Monitor, Sliders, Upload, Volume2, VolumeX, X, Wand2, Sparkles, Maximize2, Compass, Loader2 } from 'lucide-react';
-import type { ExploreSettings, GeminiModelOption } from '../types';
+import type { DiscoverySource, ExploreSettings, GeminiModelOption } from '../types';
 import type { VisualMode } from '../hooks/useAvatarAppearance';
 import { ALL_PET_STATES, type PetStateId } from './pet/petStates';
 
@@ -43,6 +43,16 @@ interface SettingsPanelProps {
 }
 
 const IDLE_OPTIONS = [5, 10, 15, 30, 60];
+
+const SOURCE_OPTIONS: Array<[DiscoverySource, string]> = [
+  ['ptt', '💬 PTT'],
+  ['bahamut', '🐉 巴哈姆特'],
+  ['reddit', '👽 Reddit'],
+  ['youtube', '▶ YouTube'],
+  ['news', '📰 新聞'],
+  ['wiki', 'W 維基百科'],
+  ['hn', 'Y Hacker News'],
+];
 
 const MODEL_OPTIONS: Array<[GeminiModelOption, string]> = [
   ['gemini-3.1-pro-preview', '✨ Gemini 3.1 Pro（主力高階）'],
@@ -285,6 +295,63 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
             )}
           </div>
 
+          <div className="space-y-1">
+            <label className="block text-[11px] text-slate-400">要逛哪些地方</label>
+            <div className="grid grid-cols-2 gap-1">
+              {SOURCE_OPTIONS.map(([key, label]) => (
+                <label
+                  key={key}
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-900/70 border border-slate-700 text-[11px]"
+                >
+                  <input
+                    type="checkbox"
+                    checked={ex.sources[key] !== false}
+                    onChange={(e) => setEx({ sources: { ...ex.sources, [key]: e.target.checked } })}
+                    className="w-3.5 h-3.5 accent-purple-500"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {ex.sources.ptt !== false && (
+            <div className="space-y-1">
+              <label className="block text-[11px] text-slate-400">常逛的 PTT 看板（英文板名，逗號分隔）</label>
+              <input
+                value={ex.pttBoards}
+                onChange={(e) => setEx({ pttBoards: e.target.value })}
+                placeholder="C_Chat, Steam, PC_Shopping"
+                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:border-purple-400"
+              />
+            </div>
+          )}
+          {ex.sources.bahamut !== false && (
+            <div className="space-y-1">
+              <label className="block text-[11px] text-slate-400">
+                常逛的巴哈哈啦板（名稱 + 看板編號，編號在看板網址的 bsn= 後面）
+              </label>
+              <textarea
+                value={ex.bahamutBoards}
+                onChange={(e) => setEx({ bahamutBoards: e.target.value })}
+                rows={2}
+                placeholder="流亡黯道 18966、原神 36730"
+                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:border-purple-400 resize-none"
+              />
+            </div>
+          )}
+          {ex.sources.reddit !== false && (
+            <div className="space-y-1">
+              <label className="block text-[11px] text-slate-400">常逛的 subreddit（留空就讓貓貓自己找）</label>
+              <input
+                value={ex.subreddits}
+                onChange={(e) => setEx({ subreddits: e.target.value })}
+                placeholder="pathofexile, gaming"
+                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs focus:outline-none focus:border-purple-400"
+              />
+            </div>
+          )}
+
           <button
             type="button"
             onClick={props.onExploreNow}
@@ -298,7 +365,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
             <p className="text-[11px] text-amber-300">⚠️ 上次探索失敗：{props.exploreStatus.message}</p>
           )}
           <p className="text-[10px] text-slate-500 leading-relaxed">
-            來源：YouTube、維基百科、Bing 新聞、Reddit 熱門、Hacker News。找到的東西會跳在貓貓頭上，也會收進「摸魚手帳」。
+            論壇會先在看板內搜尋主題，找不到就看推文 / 互動最多的熱門文。同一頁 10 分鐘內只抓一次，被網站擋就休息 15 分鐘。找到的東西會跳在貓貓頭上，也會收進「摸魚手帳」。
           </p>
         </div>
       </div>

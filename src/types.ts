@@ -42,7 +42,7 @@ export interface DiscoveredVideo {
   sourceLabel?: string;
 }
 
-export type DiscoverySource = 'youtube' | 'wiki' | 'news' | 'reddit' | 'hn';
+export type DiscoverySource = 'youtube' | 'wiki' | 'news' | 'reddit' | 'hn' | 'ptt' | 'bahamut';
 
 /** 後端自主探索推送的結果（/api/auto-explore → discovery 事件） */
 export interface Discovery {
@@ -67,6 +67,10 @@ export interface ExploreSettings {
   petInterests: string;
   greetOnReturn: boolean; // 開啟桌寵 / 離開回來時打招呼
   lateNightReminder: boolean; // 深夜提醒早點睡
+  sources: Record<DiscoverySource, boolean>; // 各探索來源開關
+  pttBoards: string; // 常逛的 PTT 看板，例如「C_Chat, Steam」
+  bahamutBoards: string; // 常逛的巴哈哈啦板，例如「流亡黯道 18966、原神 36730」
+  subreddits: string; // 常逛的 subreddit，例如「pathofexile, gaming」
 }
 
 export interface ScreenActivity {
