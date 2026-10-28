@@ -13,11 +13,18 @@ const PATTING_LINGER_MS = 1800; // 放開後再舒服一下
 const PREVIEW_MS = 8000;
 const IDLE_MIN_MS = 45_000;
 const IDLE_MAX_MS = 90_000;
-const IDLE_EMOTIONS: PetEmotionId[] = ['happy', 'hungry', 'proud', 'confused', 'loving'];
+// 閒置時的隨機小情緒，依長時間心情挑選（心情好比較常開心，心情差比較常沮喪）
+const IDLE_EMOTIONS: Record<'good' | 'normal' | 'bad', PetEmotionId[]> = {
+  good: ['happy', 'loving', 'happy', 'proud', 'hungry'],
+  normal: ['happy', 'hungry', 'proud', 'confused', 'loving'],
+  bad: ['sad', 'confused', 'sad', 'angry'],
+};
 
 type ScreenMode = Extract<PetModeId, 'gaming' | 'gemini_web' | 'line'> | null;
 
-export function usePetState(screenMode: ScreenMode) {
+export function usePetState(screenMode: ScreenMode, mood = 0) {
+  const moodRef = useRef(mood);
+  moodRef.current = mood;
   const [emotion, setEmotion] = useState<PetEmotionId | null>(null);
   const [patting, setPatting] = useState(false);
   const [preview, setPreview] = useState<PetStateId | null>(null);
@@ -66,7 +73,9 @@ export function usePetState(screenMode: ScreenMode) {
       timer = window.setTimeout(() => {
         const idleFor = Date.now() - lastActivityAt.current;
         if (idleFor >= IDLE_MIN_MS) {
-          const pick = IDLE_EMOTIONS[Math.floor(Math.random() * IDLE_EMOTIONS.length)];
+          const pool =
+            IDLE_EMOTIONS[moodRef.current >= 25 ? 'good' : moodRef.current <= -25 ? 'bad' : 'normal'];
+          const pick = pool[Math.floor(Math.random() * pool.length)];
           triggerEmotion(pick, 5000);
         }
         schedule();

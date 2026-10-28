@@ -38,6 +38,8 @@ interface SettingsPanelProps {
   onExploreNow: () => void;
   exploreStatus: ExploreStatus;
   customPrompt?: string;
+  /** 「我們的關係」卡片（放在「主動」分頁最上面） */
+  relationship?: React.ReactNode;
 }
 
 const IDLE_OPTIONS = [5, 10, 15, 30, 60];
@@ -208,8 +210,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
         {/* 個性 */}
         <div className={tab === 'persona' ? '' : 'hidden'}>{props.personalityTuner}</div>
 
-        {/* 主動互動：打招呼 + 自主網路探索 */}
+        {/* 主動互動：關係 + 打招呼 + 自主網路探索 */}
         <div className={tab === 'explore' ? 'space-y-3' : 'hidden'}>
+          {props.relationship}
           <p className="text-[11px] text-slate-400">陪伴感</p>
           <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs">
             <span>

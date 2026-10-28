@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 import { runAutoExplore, type GenerateJson } from './server/explore';
 import { describePersonality, describeTime, type ClientTime, type PersonalityConfig } from './server/persona';
 import { createEventMemory } from './server/eventMemory';
+import { createRelationship, LEVELS } from './server/relationship';
 
 function isGamingActivity(a?: { type?: string; appContext?: string } | null): boolean {
   return a?.type === 'gaming' || a?.appContext === 'gaming';
@@ -26,6 +27,8 @@ const DATA_DIR = process.env.PET_DATA_DIR ? path.resolve(process.env.PET_DATA_DI
 
 // 事件記憶（事件日記），存在 data/memories/events.json
 const eventMemory = createEventMemory(DATA_DIR);
+// 長時間心情 + 好感度，存在 data/memories/relationship.json
+const relationship = createRelationship(DATA_DIR);
 
 // Allow large payloads for base64 screen vision frames
 app.use(express.json({ limit: '30mb' }));
@@ -314,6 +317,7 @@ function buildSystemPrompt(
   return `你是 Google Gemini 擬人化日系二次元桌寵貓娘「雙子星貓」。
 【微性格】：${persona.traits}
 【說話語氣】：${persona.toneRule}
+${relationship.describe()}
 ${timeLine}
 ${memoryContext}
 ${recentKeywordsContext}
@@ -484,10 +488,13 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     const { cleanText, detectedKeywords } = extractKeywords(fullText);
     // 她真的有在回覆裡關心那件事，才記成「問過了」
     eventMemory.markAskedIfMentioned(events.dueIds, cleanText);
+    // 主人來陪她聊天 → 心情與好感度更新（也會參考她這句話的情緒）
+    const emotion = extractEmotion(fullText);
+    relationship.apply({ type: 'chat', emotion });
     send('done', {
       reply: cleanText,
       detectedKeywords,
-      emotion: extractEmotion(fullText),
+      emotion,
       usedModel,
       firstTokenMs,
       latencyMs: Date.now() - startTime,
@@ -540,6 +547,7 @@ app.post('/api/vision-track', async (req: Request, res: Response) => {
     const visionPrompt = `你是生活在主人電腦上的日系二次元桌寵貓娘「星穹領航員·雙子星貓」。
 【你的性格】：${persona.traits}
 【說話語氣】：${persona.toneRule}
+${relationship.describe()}
 ${describeTime(clientTime)}
 請仔細觀看這張主人目前的真實電腦螢幕畫面截圖！
 ${recentActivity ? `【上一刻的畫面是】：標題「${recentActivity}」(${recentObservation || ''})。如果現在畫面中的影片、字幕、人物、場景或視窗跟上一刻不同，請務必指出畫面換成了什麼新內容！` : ''}
@@ -848,11 +856,14 @@ ${conversation}
 4. 如果對話裡提到舊事件的結果（例如「面試過了」），用 updates 把它標成 resolved 並寫下結果；不要為同一件事新增事件。
 5. summary 用繁體中文、以「主人」開頭、25 字內；keyword 是 2~4 字、追問時一定會講到的詞（例如「面試」）。
 6. 沒有值得記的就回傳空陣列，寧缺勿濫。
+7. insideJokes：這段對話裡如果出現「之後可以拿來開玩笑的共同梗」（主人的糗事、口頭禪、好笑的自嘲、你們一起取的綽號），
+   用一句話記下來（20 字內，例如「主人打第三章王打了二十次」）；沒有就給空陣列，最多 2 個。
 
 輸出嚴格 JSON：
 {
   "newEvents": [{ "date": "YYYY-MM-DD", "summary": "...", "keyword": "...", "category": "${EVENT_CATEGORIES.join(' | ')}", "importance": 1~5, "followUpDate": "YYYY-MM-DD 或 null", "followUpTime": "HH:MM 或 null" }],
-  "updates": [{ "id": "evt_...", "status": "resolved 或 open", "outcome": "後續結果（沒有就省略）" }]
+  "updates": [{ "id": "evt_...", "status": "resolved 或 open", "outcome": "後續結果（沒有就省略）" }],
+  "insideJokes": ["..."]
 }`;
 
     const { response } = await generateSmartContent(
@@ -888,8 +899,21 @@ ${conversation}
       .filter(Boolean);
 
     await eventMemory.save();
-    console.log(`[事件記憶] 整理 ${messages.length} 則對話 → 新增 ${added.length}、更新 ${updated.length}`);
-    return res.json({ added, updated });
+
+    // 共同的梗（熟了以後她偶爾會拿出來講）；升到好朋友時順便幫主人取暱稱
+    const jokes = (Array.isArray(parsed.insideJokes) ? parsed.insideJokes : [])
+      .filter((j: any) => typeof j === 'string' && j.trim())
+      .slice(0, 2);
+    if (jokes.length) {
+      relationship.addJokes(jokes);
+      await relationship.save();
+    }
+    void maybeCreateNickname(ai);
+
+    console.log(
+      `[事件記憶] 整理 ${messages.length} 則對話 → 新增 ${added.length}、更新 ${updated.length}、梗 ${jokes.length}`
+    );
+    return res.json({ added, updated, insideJokes: jokes });
   } catch (err: any) {
     console.warn('[事件記憶] 整理失敗:', err?.status || err?.message);
     return res.status(502).json({ error: '日記整理失敗' });
@@ -919,6 +943,77 @@ app.delete('/api/memory/events/:id', async (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+// 9. 心情與好感度（關係）
+//    GET    /api/relationship            → 目前心情、好感度階段、相處天數、暱稱、共同的梗
+//    POST   /api/relationship/event      → 前端回報互動（摸頭、打開 / 關掉推薦）
+//    PATCH  /api/relationship            → 修改暱稱
+//    DELETE /api/relationship/jokes/:id  → 刪掉一個梗
+const CLIENT_RELATIONSHIP_EVENTS = ['pat', 'discovery_opened', 'discovery_dismissed'];
+
+app.get('/api/relationship', (req: Request, res: Response) => {
+  res.json({ ...relationship.snapshot(), levels: LEVELS.map((l) => ({ min: l.min, name: l.name })) });
+});
+
+app.post('/api/relationship/event', (req: Request, res: Response) => {
+  const type = req.body?.type;
+  if (!CLIENT_RELATIONSHIP_EVENTS.includes(type)) return res.status(400).json({ error: '不支援的互動類型' });
+  relationship.apply({ type });
+  res.json(relationship.snapshot());
+});
+
+app.patch('/api/relationship', async (req: Request, res: Response) => {
+  if (typeof req.body?.nickname === 'string') relationship.setNickname(req.body.nickname);
+  await relationship.save();
+  res.json(relationship.snapshot());
+});
+
+app.delete('/api/relationship/jokes/:id', async (req: Request, res: Response) => {
+  relationship.removeJoke(req.params.id);
+  await relationship.save();
+  res.json(relationship.snapshot());
+});
+
+/** 到了「好朋友」階段還沒有暱稱 → 依共同的梗與日記幫主人取一個（背景執行） */
+async function maybeCreateNickname(ai: GoogleGenAI) {
+  const snap = relationship.snapshot();
+  if (snap.level.index < 2 || snap.nickname) return;
+  try {
+    const diary = eventMemory.list().slice(0, 10).map((e) => e.summary);
+    let name = '';
+    // 暱稱要短（2~6 字）；太長就再想一次，最多兩次
+    for (let attempt = 0; attempt < 2 && !name; attempt++) {
+      const { response } = await generateSmartContent(
+        ai,
+        [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: `你是桌寵貓娘，跟主人已經是好朋友了，想幫他取一個親暱的暱稱。
+規則：2~4 個中文字（最多 6 個字），可愛或帶點調侃，不要冒犯；挑「一個」梗發想就好，不要把好幾個梗串在一起。
+參考你們的共同梗：${snap.insideJokes.map((j) => j.text).join('；') || '（無）'}
+參考主人最近的事：${diary.join('；') || '（無）'}
+只輸出 JSON：{ "nickname": "..." }`,
+              },
+            ],
+          },
+        ],
+        { responseMimeType: 'application/json', temperature: 1.0 },
+        'gemini-3.1-flash-lite-preview'
+      );
+      const candidate = String(JSON.parse(cleanJsonText(response.text || '{}'))?.nickname || '').trim();
+      if (candidate.length >= 2 && candidate.length <= 6) name = candidate;
+    }
+    if (name) {
+      relationship.setNickname(name);
+      await relationship.save();
+      console.log(`[關係] 升到好朋友，幫主人取了暱稱：${name}`);
+    }
+  } catch (err: any) {
+    console.warn('[關係] 取暱稱失敗:', err?.message);
+  }
+}
+
 // 7. 主動打招呼（陪伴感）：開啟桌寵 / 主人離開一陣子回來 / 深夜還在用電腦
 app.post('/api/greeting', async (req: Request, res: Response) => {
   try {
@@ -936,6 +1031,8 @@ app.post('/api/greeting', async (req: Request, res: Response) => {
 
     const persona = describePersonality(personality);
     const away = Number(awayMinutes) || 0;
+    // 被丟下越久越寂寞：先更新心情，再讓她用這個心情打招呼
+    if (reason === 'return' || reason === 'startup') relationship.apply({ type: 'return', awayMinutes: away });
     const awayText =
       away >= 60 * 24
         ? `大約 ${Math.round(away / 60 / 24)} 天`
@@ -974,6 +1071,7 @@ app.post('/api/greeting', async (req: Request, res: Response) => {
     const prompt = `你是住在主人電腦上的桌寵貓娘「雙子星貓」，是主人身邊的朋友。
 【你的性格】：${persona.traits}
 【說話語氣】：${persona.toneRule}
+${relationship.describe()}
 ${describeTime(clientTime)}
 
 【現在的情況】：${situation}

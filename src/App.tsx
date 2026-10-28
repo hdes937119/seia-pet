@@ -26,6 +26,8 @@ import { pickPatReaction } from './utils/patReactions';
 import { getClientTime } from './utils/clientTime';
 import { useCompanionGreeting, type GreetingReason } from './hooks/useCompanionGreeting';
 import { useDiaryCompiler } from './hooks/useDiaryCompiler';
+import { useRelationship } from './hooks/useRelationship';
+import { RelationshipCard } from './components/RelationshipCard';
 import { useAvatarAppearance } from './hooks/useAvatarAppearance';
 import { useClickThrough } from './hooks/useClickThrough';
 import { ScreenVisionTracker } from './components/ScreenVisionTracker';
@@ -191,7 +193,9 @@ export default function App() {
     !!currentActivity?.capturedAt && Date.now() - currentActivity.capturedAt < SCREEN_MODE_TTL_MS;
   const screenMode =
     screenModeFresh && appContext && appContext !== 'other' ? appContext : null;
-  const pet = usePetState(screenMode);
+  // 長時間心情與好感度（影響語氣、閒置動作，設定面板「主動」分頁可以看）
+  const relation = useRelationship();
+  const pet = usePetState(screenMode, relation.snapshot?.mood ?? 0);
 
   // Subscribe to memory decay service
   useEffect(() => {
@@ -384,10 +388,11 @@ export default function App() {
         voiceService.speak(finalText);
       }
 
-      // Record any detected keywords into memory decay service
-      // 後端回傳的情緒訊號 → 桌寵切換情緒動作
+      // 後端回傳的情緒訊號 → 桌寵切換情緒動作；聊完心情與好感度也變了，更新一下
       pet.triggerEmotion(data.emotion);
+      void relation.refresh();
 
+      // Record any detected keywords into memory decay service
       if (Array.isArray(data.detectedKeywords)) {
         for (const kw of data.detectedKeywords) {
           if (kw.keyword) {
@@ -545,6 +550,7 @@ export default function App() {
     if (api?.openExternal) api.openExternal(d.url);
     else window.open(d.url, '_blank', 'noopener,noreferrer');
     setDiscovery(null);
+    void relation.report('discovery_opened'); // 主人有看她推薦的東西 → 開心、好感 +
   };
 
   // 後端主動推播（SSE）
@@ -600,6 +606,7 @@ export default function App() {
       ]);
       triggerSpeak(data.text);
       pet.triggerEmotion(data.emotion);
+      void relation.refresh(); // 回來打招呼時心情可能因為「被丟下太久」變差了
     } catch (err) {
       console.warn('Greeting error:', err);
     }
@@ -786,6 +793,13 @@ export default function App() {
         onExploreNow={() => requestExplore('manual')}
         exploreStatus={exploreStatus}
         customPrompt={personality.customPrompt}
+        relationship={
+          <RelationshipCard
+            snapshot={relation.snapshot}
+            onNicknameChange={(nickname) => relation.update({ nickname })}
+            onRemoveJoke={relation.removeJoke}
+          />
+        }
       />
 
       {/* 桌寵本體：固定在右下角的座標點 */}
@@ -808,12 +822,16 @@ export default function App() {
           onPatStart={() => {
             pet.startPatting();
             handlePetHead();
+            void relation.report('pat'); // 摸頭 → 心情變好、好感 +
           }}
           onPatEnd={pet.stopPatting}
           discovery={discovery}
           isExploring={exploreStatus.state === 'exploring'}
           onOpenDiscovery={() => discovery && openDiscovery(discovery)}
-          onDismissDiscovery={() => setDiscovery(null)}
+          onDismissDiscovery={() => {
+            setDiscovery(null);
+            void relation.report('discovery_dismissed'); // 直接關掉 → 有點失落
+          }}
         />
       </div>
 
