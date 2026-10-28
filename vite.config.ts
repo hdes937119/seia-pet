@@ -23,7 +23,8 @@ export default defineConfig(() => {
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
       // 不監看 TTS/（上萬個 Python 檔），減少 CPU 與記憶體占用
-      watch: process.env.DISABLE_HMR === 'true' ? null : { ignored: ['**/TTS/**'] },
+      watch:
+        process.env.DISABLE_HMR === 'true' ? null : { ignored: ['**/TTS/**', '**/data/**'] },
     },
   };
 });

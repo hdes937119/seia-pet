@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, desktopCapturer } from 'electron';
+import { app, BrowserWindow, ipcMain, desktopCapturer, screen } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -25,8 +25,9 @@ function createWindow() {
         }
     });
 
-    // 跟後端監聽的 127.0.0.1 對齊（Windows 上 localhost 可能先解析成 IPv6 ::1）
-    mainWindow.loadURL('http://127.0.0.1:3000');
+    // 注意：網址（localhost vs 127.0.0.1）決定了 localStorage / IndexedDB 存在哪裡，
+    // 改掉會讓聊天紀錄、記憶、立繪「看起來不見」，所以保持原本的 localhost。
+    mainWindow.loadURL('http://localhost:3000');
     mainWindow.setMenuBarVisibility(false);
 }
 
@@ -36,7 +37,43 @@ ipcMain.handle('get-screen', async () => {
     return sources[0]?.id ?? null;
 });
 
-app.whenReady().then(createWindow);
+// 視窗拖曳：前端按住角落把手時通知這裡，由主程式跟著游標移動視窗。
+// （比 CSS 的 -webkit-app-region 可靠，不會被其他「不可拖曳」區塊抵銷）
+let dragTimer = null;
+
+function stopWindowDrag() {
+    if (dragTimer) {
+        clearInterval(dragTimer);
+        dragTimer = null;
+    }
+}
+
+ipcMain.on('window-drag-start', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) return;
+    stopWindowDrag();
+    const startCursor = screen.getCursorScreenPoint();
+    const startBounds = win.getBounds();
+    dragTimer = setInterval(() => {
+        if (win.isDestroyed()) return stopWindowDrag();
+        const cursor = screen.getCursorScreenPoint();
+        // 用 setBounds 並固定寬高，避免 Windows 高 DPI 下 setPosition 讓視窗越拖越大的問題
+        win.setBounds({
+            x: startBounds.x + cursor.x - startCursor.x,
+            y: startBounds.y + cursor.y - startCursor.y,
+            width: startBounds.width,
+            height: startBounds.height,
+        });
+    }, 8);
+});
+
+ipcMain.on('window-drag-stop', stopWindowDrag);
+
+app.whenReady().then(() => {
+    createWindow();
+    // 保險：視窗失去焦點時一定停止拖曳
+    mainWindow.on('blur', stopWindowDrag);
+});
 
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();

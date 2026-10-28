@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import dotenv from 'dotenv';
@@ -614,6 +615,43 @@ app.post('/api/idle-explore', async (req: Request, res: Response) => {
 });
 
 
+
+// 5. 自訂立繪：存成專案資料夾裡的真實檔案（data/custom-avatar.png），
+//    不再依賴瀏覽器儲存空間（換網址、清快取都不會不見）
+const DATA_DIR = path.resolve(__dirname, 'data');
+const AVATAR_EXTS: Record<string, string> = { png: 'png', gif: 'gif', jpeg: 'jpg', webp: 'webp' };
+const avatarPath = (ext: string) => path.join(DATA_DIR, `custom-avatar.${ext}`);
+const findAvatarFile = () =>
+  Object.values(AVATAR_EXTS).map(avatarPath).find((p) => fs.existsSync(p)) || null;
+
+app.get('/api/avatar', (req: Request, res: Response) => {
+  const file = findAvatarFile();
+  if (!file) return res.status(404).json({ error: 'No custom avatar' });
+  res.set('Cache-Control', 'no-cache');
+  return res.sendFile(file);
+});
+
+app.put('/api/avatar', async (req: Request, res: Response) => {
+  try {
+    const { dataUrl } = req.body || {};
+    const match =
+      typeof dataUrl === 'string' && dataUrl.match(/^data:image\/(png|gif|jpeg|webp);base64,(.+)$/);
+    if (!match) return res.status(400).json({ error: 'Expected a PNG/GIF/JPEG/WebP data URL' });
+    const ext = AVATAR_EXTS[match[1]];
+    await fs.promises.mkdir(DATA_DIR, { recursive: true });
+    // 只保留一張立繪：先刪掉其他格式的舊檔
+    for (const other of Object.values(AVATAR_EXTS)) {
+      if (other !== ext) await fs.promises.rm(avatarPath(other), { force: true });
+    }
+    const file = avatarPath(ext);
+    await fs.promises.writeFile(file, Buffer.from(match[2], 'base64'));
+    console.log(`[立繪] 已儲存到 ${file}`);
+    return res.json({ ok: true, path: file });
+  } catch (err: any) {
+    console.error('[立繪] 儲存失敗:', err?.message);
+    return res.status(500).json({ error: err?.message || 'Save failed' });
+  }
+});
 
 // Mount Vite or static server
 async function startServer() {

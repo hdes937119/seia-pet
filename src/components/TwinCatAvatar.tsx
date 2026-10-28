@@ -13,6 +13,9 @@ import {
   Upload,
 } from 'lucide-react';
 import { removeFakeTransparency } from '../utils/removeFakeTransparency';
+import { loadCustomAvatar, saveCustomAvatar } from '../services/avatarStore';
+
+const VISUAL_MODE_KEY = 'gemini_twin_cat_visual_mode';
 
 interface TwinCatAvatarProps {
   isTalking: boolean;
@@ -35,21 +38,50 @@ export const TwinCatAvatar: React.FC<TwinCatAvatarProps> = ({
   onOpenChat,
   onPetHead,
 }) => {
-  const [visualMode, setVisualMode] = useState<VisualMode>('mv_portrait');
+  // 記住上次選的立繪模式，重開後維持一樣
+  const [visualMode, setVisualMode] = useState<VisualMode>(() => {
+    try {
+      return (localStorage.getItem(VISUAL_MODE_KEY) as VisualMode) || 'mv_portrait';
+    } catch {
+      return 'mv_portrait';
+    }
+  });
   const [isBlinking, setIsBlinking] = useState(false);
   const [isPatting, setIsPatting] = useState(false);
   const [mouthPhase, setMouthPhase] = useState(0);
   const [eyeOffset, setEyeOffset] = useState({ x: 0, y: 0 });
-  const [customImgUrl, setCustomImgUrl] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem('gemini_twin_cat_custom_img');
-    } catch {
-      return null;
-    }
-  });
+  const [customImgUrl, setCustomImgUrl] = useState<string | null>(null);
+  const [avatarLoaded, setAvatarLoaded] = useState(false);
   const [patParticles, setPatParticles] = useState<Array<{ id: number; x: number; y: number }>>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 啟動時從 IndexedDB 載入自訂立繪
+  useEffect(() => {
+    let cancelled = false;
+    loadCustomAvatar().then((url) => {
+      if (cancelled) return;
+      setCustomImgUrl(url);
+      setAvatarLoaded(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 記住目前模式；若選了「自訂」但圖不見了，退回原片立繪
+  useEffect(() => {
+    if (!avatarLoaded) return;
+    if (visualMode === 'custom' && !customImgUrl) {
+      setVisualMode('mv_portrait');
+      return;
+    }
+    try {
+      localStorage.setItem(VISUAL_MODE_KEY, visualMode);
+    } catch {
+      // ignore
+    }
+  }, [visualMode, customImgUrl, avatarLoaded]);
 
   // Periodic natural eye blinking
   useEffect(() => {
@@ -118,11 +150,9 @@ export const TwinCatAvatar: React.FC<TwinCatAvatarProps> = ({
       }
       setCustomImgUrl(result);
       setVisualMode('custom');
-      try {
-        localStorage.setItem('gemini_twin_cat_custom_img', result);
-      } catch {
-        // ignore quota errors
-      }
+      const savedUrl = await saveCustomAvatar(result);
+      if (savedUrl) setCustomImgUrl(savedUrl);
+      else console.warn('自訂立繪未能永久儲存，下次開啟可能需要重新上傳');
     };
     reader.readAsDataURL(file);
     e.target.value = ''; // 允許重新選同一張圖
@@ -183,6 +213,22 @@ export const TwinCatAvatar: React.FC<TwinCatAvatarProps> = ({
             <Wand2 className="w-3 h-3" />
             <span>動態骨骼</span>
           </button>
+
+          {customImgUrl && (
+            <button
+              type="button"
+              onClick={() => setVisualMode('custom')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                visualMode === 'custom'
+                  ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="切回你上傳的自訂立繪"
+            >
+              <Sparkles className="w-3 h-3" />
+              <span>自訂</span>
+            </button>
+          )}
         </div>
 
         <button

@@ -9,3 +9,6 @@ coverage/
 
 # GPT-SoVITS 本地執行環境（體積巨大，不納入版本控制）
 TTS/
+
+# 桌寵執行時產生的資料（例如自訂立繪 data/custom-avatar.png）
+data/

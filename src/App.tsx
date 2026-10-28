@@ -32,6 +32,7 @@ import { PersonalityTuner } from './components/PersonalityTuner';
 import { MemoryNotebookModal } from './components/MemoryNotebookModal';
 import { IdleVideoBacklogModal } from './components/IdleVideoBacklogModal';
 import { ChatInterface } from './components/ChatInterface';
+import { WindowDragCorners } from './components/WindowDragCorners';
 
 const STORAGE_KEY_PERSONALITY = 'gemini_twin_cat_personality';
 const STORAGE_KEY_MESSAGES = 'gemini_twin_cat_messages';
@@ -411,6 +412,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col antialiased selection:bg-purple-600/30 selection:text-purple-200">
+      {/* 四個角落的拖曳把手（只在 Electron 桌寵視窗顯示） */}
+      <WindowDragCorners />
       {/* Top Universal Navbar */}
       <header className="draggable sticky top-0 z-40 bg-slate-900/90 border-b border-slate-800/80 backdrop-blur-md px-4 py-2.5">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
