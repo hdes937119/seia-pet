@@ -470,13 +470,13 @@ app.post('/api/chat', async (req: Request, res: Response) => {
 
 /**
  * 判斷桌寵的「運作模式」：遊戲 / Gemini 網頁 / LINE / 其他。
- * 以模型判斷為主，再用視窗標題關鍵字補強（模型偶爾會漏判）。
+ * 以模型判斷為主；模型說「其他」或沒給時，才用關鍵字補強。
+ * 關鍵字只認大寫的「LINE」（App 名稱），避免把 Command Line、online、timeline 這類英文誤判成 LINE。
  */
-function detectAppContext(modelGuess?: string, category?: string, title = ''): string {
-  const t = title.toLowerCase();
-  if (/\bline\b|line 聊天|line 群組/i.test(title)) return 'line';
-  if (t.includes('gemini') && /google|網頁|browser|chrome|edge|gemini\.google/i.test(title)) return 'gemini_web';
+function detectAppContext(modelGuess?: string, category?: string, text = ''): string {
   if (['gaming', 'gemini_web', 'line'].includes(modelGuess || '')) return modelGuess as string;
+  if (/\bLINE\b|LINE ?(聊天|群組|訊息)/.test(text)) return 'line';
+  if (/gemini\.google\.com|Gemini 網頁版|Google Gemini 網頁/i.test(text)) return 'gemini_web';
   if (category === 'gaming') return 'gaming';
   return 'other';
 }

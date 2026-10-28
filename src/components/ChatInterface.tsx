@@ -3,6 +3,29 @@ import { Send, Sparkles, Smile, Volume2, VolumeX, Trash2, ArrowLeftRight, CheckC
 import { ChatMessage, ChatStyle, PersonalityConfig, MemoryKeyword, ScreenActivity } from '../types';
 import type { VoiceInputState } from '../hooks/useVoiceInput';
 
+// 把訊息裡的網址變成可點的連結（Electron 裡會由 main.js 交給預設瀏覽器開啟）
+const URL_RE = /(https?:\/\/[^\s]+)/g;
+function renderWithLinks(text: string): React.ReactNode {
+  const parts = text.split(URL_RE);
+  if (parts.length === 1) return text;
+  return parts.map((part, i) =>
+    i % 2 === 1 ? (
+      <a
+        key={i}
+        href={part}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline decoration-dotted text-sky-300 hover:text-sky-200 break-all"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {part.length > 48 ? part.slice(0, 45) + '…' : part}
+      </a>
+    ) : (
+      <React.Fragment key={i}>{part}</React.Fragment>
+    )
+  );
+}
+
 interface ChatInterfaceProps {
   messages: ChatMessage[];
   onSendMessage: (text: string) => Promise<void>;
@@ -220,8 +243,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     : 'bg-slate-800/90 text-slate-100 rounded-bl-xs border border-slate-700'
                 }`}
               >
-                <p className="whitespace-pre-wrap">
-                  {msg.content}
+                <p className="whitespace-pre-wrap break-words">
+                  {renderWithLinks(msg.content)}
                   {msg.isStreaming && (
                     <span className="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-purple-300 animate-pulse rounded-sm" />
                   )}

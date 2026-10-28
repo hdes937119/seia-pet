@@ -121,9 +121,27 @@ async function searchYouTube(query: string, limit: number): Promise<Candidate[]>
   }));
 }
 
+/**
+ * Bing 新聞的連結是轉址連結（bing.com/news/apiclick.aspx?tid=亂數&url=真正網址），
+ * 每次抓 tid 都不同，會讓「避免重複推薦」失效；這裡把真正的文章網址取出來。
+ */
+function unwrapBingLink(link: string): string {
+  try {
+    const u = new URL(link);
+    if (u.hostname.endsWith('bing.com') && /apiclick/i.test(u.pathname)) {
+      const real = u.searchParams.get('url');
+      if (real && /^https?:\/\//i.test(real)) return real;
+    }
+  } catch {
+    // 不是合法網址就原樣回傳
+  }
+  return link;
+}
+
 async function searchBingNews(query: string, limit: number): Promise<Candidate[]> {
   const xml = await fetchText(`https://www.bing.com/news/search?format=rss&q=${encodeURIComponent(query)}`);
   return parseFeed(xml)
+    .map((it) => ({ ...it, link: unwrapBingLink(it.link) }))
     .filter((it) => /^https?:\/\//.test(it.link))
     .slice(0, limit)
     .map((it) => ({ source: 'news' as const, title: it.title, url: it.link, snippet: cleanText(it.description) }));

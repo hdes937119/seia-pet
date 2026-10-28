@@ -8,6 +8,9 @@ const __dirname = path.dirname(__filename);
 console.log(">>> 桌寵主程式啟動中... <<<");
 
 let mainWindow;
+// 注意：網址（localhost vs 127.0.0.1）決定了 localStorage / IndexedDB 存在哪裡，
+// 改掉會讓聊天紀錄、記憶、立繪「看起來不見」，所以保持原本的 localhost。
+const APP_URL = 'http://localhost:3000';
 
 function createWindow() {
     mainWindow = new BrowserWindow({
@@ -28,10 +31,21 @@ function createWindow() {
         }
     });
 
-    // 注意：網址（localhost vs 127.0.0.1）決定了 localStorage / IndexedDB 存在哪裡，
-    // 改掉會讓聊天紀錄、記憶、立繪「看起來不見」，所以保持原本的 localhost。
-    mainWindow.loadURL('http://localhost:3000');
+    mainWindow.loadURL(APP_URL);
     mainWindow.setMenuBarVisibility(false);
+
+    // 外部連結（摸魚手帳的「搜尋觀看」等 target=_blank / window.open）一律交給預設瀏覽器，
+    // 不在桌寵程式裡開新視窗載入外部網站
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+        if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+        return { action: 'deny' };
+    });
+    // 防止桌寵視窗本身被導到外部網站（例如把連結拖進視窗）
+    mainWindow.webContents.on('will-navigate', (event, url) => {
+        if (url.startsWith(APP_URL)) return;
+        event.preventDefault();
+        if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    });
 }
 
 // 建立 IPC 通道，在背景抓取主螢幕 ID 傳給前端

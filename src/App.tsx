@@ -22,6 +22,7 @@ import { RadialMenu, type RadialMenuItem } from './components/RadialMenu';
 import { SettingsPanel, type ExploreStatus, type SettingsTab } from './components/SettingsPanel';
 import { useIdleExplorer } from './hooks/useIdleExplorer';
 import { useServerEvents } from './hooks/useServerEvents';
+import { pickPatReaction } from './utils/patReactions';
 import { useAvatarAppearance } from './hooks/useAvatarAppearance';
 import { useClickThrough } from './hooks/useClickThrough';
 import { ScreenVisionTracker } from './components/ScreenVisionTracker';
@@ -134,6 +135,10 @@ export default function App() {
 
   // 浮動版面：預設只顯示立繪；左鍵開對話框、右鍵開扇形選單
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const isChatOpenRef = useRef(false);
+  useEffect(() => {
+    isChatOpenRef.current = isChatOpen;
+  }, [isChatOpen]);
   const [radialMenu, setRadialMenu] = useState<{ open: boolean; x: number; y: number }>({
     open: false,
     x: 0,
@@ -471,7 +476,21 @@ export default function App() {
         discoveredAt: d.discoveredAt,
       };
       setVideos((prev) => [entry, ...prev.filter((v) => (v.url || v.searchKeyword) !== d.url)]);
-      setDiscovery(d);
+      if (isChatOpenRef.current) {
+        // 對話框開著時，頭頂氣泡會被對話框擋住 → 改成直接在對話裡分享（連結可點）
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: 'msg_discovery_' + d.id,
+            role: 'pet',
+            content: `🧭 ${d.bubbleText}\n【${d.sourceLabel}】${d.title}\n🐾 ${d.catReview}\n${d.url}`,
+            timestamp: new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
+            isRead: true,
+          },
+        ]);
+      } else {
+        setDiscovery(d);
+      }
       voiceService.speak(d.bubbleText);
       pet.triggerEmotion('proud');
     },
@@ -540,15 +559,9 @@ export default function App() {
     setVideos((prev) => prev.filter((v) => v.id !== id));
   };
   // Head patting reaction
+  // 摸頭反應：語氣跟著人設滑桿（傲嬌 / 毒舌 / 溫柔 / 一般）
   const handlePetHead = () => {
-    const patReactions = [
-      '喵～♪ 好舒服～再多摸兩下嘛！',
-      '哼！本喵才不是隨便給人摸的呢……（發出呼嚕聲）',
-      '呼嚕呼嚕～本喵的心情值直接飆升 100 點！',
-      '主人今天辛苦啦～本喵的大豆包能量分你一半喵！',
-    ];
-    const picked = patReactions[Math.floor(Math.random() * patReactions.length)];
-    triggerSpeak(picked);
+    triggerSpeak(pickPatReaction(personality));
   };
 
   const permanentCount = memories.filter((m) => m.isPermanent).length;

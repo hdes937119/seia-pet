@@ -2,6 +2,9 @@ import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Eye, Mic, Search } from 'lucide-react';
 import { ChibiPet } from './pet/ChibiPet';
+import { HeadPatZone } from './pet/HeadPatZone';
+import { PetParticles } from './pet/PetEffects';
+import { PET_STATES } from './pet/petStates';
 import { DiscoveryBubble } from './DiscoveryBubble';
 import type { Discovery } from '../types';
 import type { PetStateId } from './pet/petStates';
@@ -53,6 +56,7 @@ export const PetStage: React.FC<PetStageProps> = ({
   onOpenDiscovery,
   onDismissDiscovery,
 }) => {
+  const isPatting = petState === 'patting';
   return (
     <div
       className="relative w-full h-full select-none"
@@ -126,20 +130,31 @@ export const PetStage: React.FC<PetStageProps> = ({
         )}
 
         {visualMode === 'custom' && customImgUrl && (
-          <img
-            src={customImgUrl}
-            alt="自訂雙子星貓形象"
-            draggable={false}
-            className={`w-full h-full object-contain object-bottom drop-shadow-[0_6px_18px_rgba(76,29,149,0.55)] ${
-              isTalking ? 'pet-anim-talk pet-body' : 'pet-anim-float pet-body'
-            }`}
-          />
+          <div className="absolute inset-0" style={{ containerType: 'inline-size' }}>
+            <img
+              src={customImgUrl}
+              alt="自訂雙子星貓形象"
+              draggable={false}
+              className={`w-full h-full object-contain object-bottom drop-shadow-[0_6px_18px_rgba(76,29,149,0.55)] pet-body ${
+                isPatting ? 'pet-anim-squish' : isTalking ? 'pet-anim-talk' : 'pet-anim-float'
+              }`}
+            />
+            {isPatting && <PetParticles specs={PET_STATES.patting.particles} stateKey="patting-custom" />}
+            <HeadPatZone onStart={onPatStart} onEnd={onPatEnd} className="left-[20%] top-0 w-[60%] h-[40%]" />
+          </div>
         )}
 
         {visualMode === 'mv_full' && (
-          <div className="absolute inset-x-0 bottom-0 aspect-video rounded-2xl overflow-hidden border-2 border-indigo-400/50 shadow-[0_0_30px_rgba(99,102,241,0.45)] pet-anim-float pet-body">
+          <div
+            className={`absolute inset-x-0 bottom-0 aspect-video rounded-2xl overflow-hidden border-2 border-indigo-400/50 shadow-[0_0_30px_rgba(99,102,241,0.45)] pet-body ${
+              isPatting ? 'pet-anim-squish' : 'pet-anim-float'
+            }`}
+            style={{ containerType: 'inline-size' }}
+          >
             <img src="/bili_cover.jpg" alt="雙子星貓 舞台" draggable={false} className="w-full h-full object-cover" />
             {isTalking && <div className="absolute inset-0 ring-4 ring-inset ring-amber-300/75 animate-pulse" />}
+            {isPatting && <PetParticles specs={PET_STATES.patting.particles} stateKey="patting-mv" />}
+            <HeadPatZone onStart={onPatStart} onEnd={onPatEnd} className="left-[30%] top-[5%] w-[40%] h-[60%]" />
           </div>
         )}
       </div>
