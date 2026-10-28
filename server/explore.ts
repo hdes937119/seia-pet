@@ -5,9 +5,11 @@
  *    - 實測 DuckDuckGo、Mojeek 與 Reddit 的 JSON API 都會回 403；google-it 需要爬 Google 網頁容易被封；
  *      Bing「網頁搜尋」RSS 回傳的結果跟關鍵字無關（Instagram、購物網站…）不能用。
  *      所以改用這些「官方提供、免金鑰」而且結果準確的 RSS / API，不需要額外安裝套件。
- *  Phase 3 AI 篩選：先讓 Gemini 依喜好規劃搜尋關鍵字，再從候選中挑一篇最有趣的，寫毒舌短評。
+ *  Phase 3 AI 篩選：先讓 Gemini 依喜好規劃搜尋關鍵字，再從候選中挑一篇最有趣的，
+ *    依人設滑桿的語氣（server/persona.ts）寫推播與短評。
  */
 import ytSearch from 'yt-search';
+import { describePersonality, type PersonalityConfig } from './persona';
 
 export type SourceKind = 'youtube' | 'wiki' | 'news' | 'reddit' | 'hn';
 
@@ -34,12 +36,7 @@ export interface Discovery {
 }
 
 export interface ExploreInput {
-  personality?: {
-    sharpTongue?: number;
-    humorous?: number;
-    tsundere?: number;
-    customPrompt?: string;
-  };
+  personality?: PersonalityConfig;
   petInterests?: string; // 設定面板「探索興趣」
   memoryInterests?: string[]; // 長期記憶裡的主人喜好
   recentUrls?: string[]; // 最近推薦過的，避免重複
@@ -189,11 +186,6 @@ export const sources = { searchYouTube, searchWikipedia, searchBingNews, redditH
 
 /* ───────────────────────── 主流程 ───────────────────────── */
 
-function personaLine(p: ExploreInput['personality'] = {}) {
-  return `毒舌 ${p.sharpTongue ?? 60}%、幽默 ${p.humorous ?? 70}%、傲嬌 ${p.tsundere ?? 70}%${
-    p.customPrompt ? `；今日特調：${p.customPrompt}` : ''
-  }`;
-}
 
 /** 依來源輪流挑，讓 5 篇候選盡量涵蓋不同來源 */
 function interleave(groups: Candidate[][], max: number): Candidate[] {
@@ -270,19 +262,24 @@ ${seeds || '（沒有特別設定，就挑遊戲、動漫、科技、迷因之�
     .map((c, i) => `${i + 1}. [${SOURCE_LABEL[c.source]}] ${c.title}\n   摘要：${c.snippet || '（無）'}`)
     .join('\n');
 
+  // 語氣完全跟著設定面板的人設滑桿走（毒舌 / 話癆 / 幽默 / 傲嬌），不在這裡寫死
+  const persona = describePersonality(input.personality);
   let pick: any = {};
   try {
     pick = await generateJson(
-      `你是桌寵貓娘「雙子星貓」（${personaLine(input.personality)}），剛剛自己上網逛了「${topic}」，找到這些：
+      `你是桌寵貓娘「雙子星貓」，剛剛自己上網逛了「${topic}」，找到這些：
 ${listing}
+
+【你的性格】：${persona.traits}
+【說話語氣】：${persona.toneRule}
 
 從中挑出「跟主題『${topic}』直接相關、而且最有趣」的一篇分享給主人。
 跟主題無關的東西（例如購物頁、軟體教學、網站首頁）絕對不要選；如果都普普通通，就挑最貼近主題的那篇。
-輸出嚴格 JSON：
+bubbleText 與 catReview 都必須完全依照上面的【說話語氣】來寫。輸出嚴格 JSON：
 {
   "pick": 被選中的編號（1~${candidates.length} 的數字）,
-  "bubbleText": "跳出來叫主人看的一句話，傲嬌口吻，例如「喂，我剛剛滑到這個，才不是特地找給你看的...」（30字內）",
-  "catReview": "對這篇內容本身的毒舌短評，要提到具體內容（40字內）",
+  "bubbleText": "跳出來叫主人看的一句話（30字內，${persona.lengthHint}）。語氣參考：「${persona.bubbleExample}」，但要換成自己的話",
+  "catReview": "${persona.reviewStyle}，要提到具體內容（40字內）",
   "category": "gaming | animation | funny | tech | music | news | forum | article 其中一個",
   "tag": "2~4字的標籤"
 }`,
@@ -301,8 +298,8 @@ ${listing}
     source: chosen.source,
     sourceLabel: SOURCE_LABEL[chosen.source],
     snippet: chosen.snippet,
-    catReview: pick.catReview || '哼，這個看起來還算有點意思啦，給你看看。',
-    bubbleText: pick.bubbleText || '喂，我剛剛滑到這個，才不是特地找給你看的...',
+    catReview: pick.catReview || '這個看起來挺有意思的，給你看看～',
+    bubbleText: pick.bubbleText || persona.bubbleExample,
     category: pick.category || (chosen.source === 'youtube' ? 'gaming' : chosen.source === 'reddit' ? 'forum' : 'article'),
     tag: pick.tag || topic.slice(0, 4),
     topic,

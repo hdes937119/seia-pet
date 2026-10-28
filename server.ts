@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import dotenv from 'dotenv';
 import { runAutoExplore, type GenerateJson } from './server/explore';
+import { describePersonality, type PersonalityConfig } from './server/persona';
 
 dotenv.config();
 
@@ -259,47 +260,13 @@ function abortOnClientClose(req: Request, res: Response): AbortController {
   return controller;
 }
 
-interface PersonalityConfig {
-  sharpTongue: number;
-  chatty: number;
-  humorous: number;
-  tsundere: number;
-  customPrompt?: string;
-}
-
 function buildSystemPrompt(
   personality: PersonalityConfig,
   permanentMemories: Array<{ keyword: string; category: string; notes?: string }> = [],
   activeKeywords: Array<{ keyword: string; strength: number }> = [],
   currentActivity?: { type: string; title: string; observation?: string }
 ) {
-  const sharpDesc =
-    personality.sharpTongue > 70
-      ? '毒舌犀利、愛吐槽主人、辛辣中帶著貓式傲嬌'
-      : personality.sharpTongue < 30
-        ? '極度溫柔、體貼入微、把主人當寶貝寵溺'
-        : '帶著善意的可愛損友吐槽口吻';
-
-  const chattyDesc =
-    personality.chatty > 70
-      ? '元氣活潑、語氣豐富、常帶日系萌系語助詞「喵～♪」「えへへ」「哈…」'
-      : personality.chatty < 30
-        ? '簡潔安靜、言簡意賅、平均1~2句話'
-        : '節奏輕快自然的日常LINE好友對話（約2~3句話）';
-
-  const humorDesc =
-    personality.humorous > 70
-      ? '超愛玩梗、滿嘴搞笑吐槽'
-      : personality.humorous < 30
-        ? '認真分析、給予實質建議'
-        : '輕鬆幽默與貼心陪伴兼具';
-
-  const tsundereDesc =
-    personality.tsundere > 70
-      ? '重度日系傲嬌（「哼！本喵才不是特地關心你呢喵！」）'
-      : personality.tsundere < 30
-        ? '坦率直球表達喜愛'
-        : '微傲嬌、嘴硬心軟';
+  const persona = describePersonality(personality);
 
   // 🌟 升級版記憶群組化：將長期記憶按 Category 分類整理，避免大腦混淆
   let memoryContext = '';
@@ -327,16 +294,16 @@ function buildSystemPrompt(
     : '';
 
   return `你是 Google Gemini 擬人化日系二次元桌寵貓娘「雙子星貓」。
-【微性格】：毒舌(${personality.sharpTongue}%):${sharpDesc} | 話癆(${personality.chatty}%):${chattyDesc} | 幽默(${personality.humorous}%):${humorDesc} | 傲嬌(${personality.tsundere}%):${tsundereDesc}
-${personality.customPrompt ? `【今日特調】：${personality.customPrompt}` : ''}
+【微性格】：${persona.traits}
+【說話語氣】：${persona.toneRule}
 ${memoryContext}
 ${recentKeywordsContext}
 ${activityContext}
 
 【核心回覆最高原則】：
 1. **絕對以主人最新輸入的內容為主來進行回應**！主人聊什麼你就專心聊什麼。
-2. **多維度記憶調用**：你有上述豐富的長期記憶檔案庫。當主人聊到相關話題時，請**隨機應變地挑選不同領域的記憶**來打屁或吐槽，絕對不要每次聊天都反覆抓同一組關鍵字炒冷飯！
-3. 像真實 LINE 好友一樣自然對話（繁體中文），可自然穿插可愛日系萌音口癖（如「喵～♪」「哼哼～」「哈…」），回覆保持精煉生動（2~4句內）。
+2. **多維度記憶調用**：你有上述豐富的長期記憶檔案庫。當主人聊到相關話題時，請**隨機應變地挑選不同領域的記憶**來聊（語氣依照上面的微性格），絕對不要每次聊天都反覆抓同一組關鍵字炒冷飯！
+3. 像真實 LINE 好友一樣自然對話（繁體中文），可自然穿插可愛日系萌音口癖（如「喵～♪」「哈…」），回覆保持精煉生動（2~4句內）。
 4. 若主人這句話出現新的個人喜好/遊戲/飲食/習慣關鍵字，在文末加上隱藏標記：<!--KEYWORDS:[{"keyword":"詞","category":"preference|habit|game|topic","notes":"簡註"}]-->（若無則不加）。
 5. 每次回覆的最後一定要加上一個隱藏的情緒標記，代表你這句話的心情（桌寵會依此切換動作）：<!--EMOTION:情緒-->，情緒只能是 happy、hungry、sad、angry、proud、confused、loving 其中之一（開心/想吃/難過/生氣吐槽/得意/疑惑/害羞喜歡）。`;
 }
@@ -536,7 +503,10 @@ app.post('/api/vision-track', async (req: Request, res: Response) => {
     const mimeType = matches ? matches[1] : 'image/jpeg';
     const base64Data = matches ? matches[2] : screenshot;
 
+    const persona = describePersonality(personality);
     const visionPrompt = `你是生活在主人電腦上的日系二次元桌寵貓娘「星穹領航員·雙子星貓」。
+【你的性格】：${persona.traits}
+【說話語氣】：${persona.toneRule}
 請仔細觀看這張主人目前的真實電腦螢幕畫面截圖！
 ${recentActivity ? `【上一刻的畫面是】：標題「${recentActivity}」(${recentObservation || ''})。如果現在畫面中的影片、字幕、人物、場景或視窗跟上一刻不同，請務必指出畫面換成了什麼新內容！` : ''}
 ${scenarioHint ? `【場景提示】：${scenarioHint}` : ''}
@@ -549,7 +519,7 @@ ${scenarioHint ? `【場景提示】：${scenarioHint}` : ''}
   "appContext": "gaming"（正在玩遊戲） | "gemini_web"（瀏覽器開著 Google Gemini 網頁） | "line"（LINE 桌面版或網頁版視窗） | "other"（其他）,
   "activityTitle": "從畫面讀出的具體影片名稱/視窗標題/字幕主題（15字內）",
   "observation": "詳細描述你在畫面中看到的具體人物、動作、場景與文字字幕（40字內）",
-  "catComment": "以你身為雙子星貓的性格（毒舌度${personality?.sharpTongue ?? 50}%、幽默度${personality?.humorous ?? 70}%、傲嬌度${personality?.tsundere ?? 60}%），直接針對這張畫面裡的具體內容對主人主動吐槽或聊起來！（2~3句話，約35~65字，要講出畫面細節，絕對不要固定台詞！）"
+  "catComment": "完全依照上面的【說話語氣】，直接針對這張畫面裡的具體內容主動跟主人搭話（2~3句話，約35~65字，${persona.lengthHint}，要講出畫面細節，絕對不要固定台詞！）"
 }`;
 
     const ai = getAiClient();
