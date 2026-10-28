@@ -14,6 +14,7 @@ import {
 } from './types';
 import { voiceService } from './services/voiceService';
 import { streamChat, createSentenceSplitter } from './services/chatStream';
+import { splitSegments, typingDelayMs, speakableText, type Segment } from './services/replyRhythm';
 import { useVoiceInput } from './hooks/useVoiceInput';
 import { usePetState } from './hooks/usePetState';
 import { memoryDecayService } from './services/memoryDecayService';
@@ -314,26 +315,77 @@ export default function App() {
     pet.markActive();
     setIsStreamingOrWaiting(true);
 
-    // 串流中的貓貓回覆：收到第一段文字時才建立訊息，之後逐段補上
-    const petMsgId = 'msg_pet_' + Date.now();
-    let streamedText = '';
-    let petMsgCreated = false;
+    // 說話節奏：回覆可能被模型用 [[NEXT]] 切成好幾則（或含貼圖）。
+    // 第 1 則照常逐字串流；第 2 則開始，先「輸入中…」一下再整則送出，像真人連傳訊息。
+    const petMsgBase = 'msg_pet_' + Date.now();
+    const segId = (i: number) => `${petMsgBase}_${i}`;
+    let streamedText = ''; // 串流收到的原始文字（含 [[NEXT]]）
+    let firstSegText = ''; // 第 1 則目前顯示到哪（給語音逐句唸用）
+    let firstSegDone = false;
+    const createdSegs = new Set<number>();
+    const scheduledSegs = new Set<number>();
+    let revealChain: Promise<void> = Promise.resolve();
     const splitter = createSentenceSplitter();
     const timestamp = () =>
       new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
 
-    const upsertPetMsg = (content: string, isStreaming: boolean) => {
-      if (!petMsgCreated) {
-        petMsgCreated = true;
+    const upsertSeg = (i: number, seg: Segment, isStreaming: boolean) => {
+      const fields = { content: seg.content, sticker: seg.sticker, isStreaming };
+      if (!createdSegs.has(i)) {
+        createdSegs.add(i);
         setMessages((prev) => [
           ...prev,
-          { id: petMsgId, role: 'pet', content, timestamp: timestamp(), isRead: true, isStreaming },
+          { id: segId(i), role: 'pet', timestamp: timestamp(), isRead: true, ...fields },
         ]);
       } else {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === petMsgId ? { ...m, content, isStreaming } : m))
-        );
+        setMessages((prev) => prev.map((m) => (m.id === segId(i) ? { ...m, ...fields } : m)));
       }
+      if (seg.content) showBubble(seg.content);
+    };
+
+    // 第 2 則之後：等一下（輸入中…）再整則送出，並交給語音
+    const scheduleReveal = (i: number, seg: Segment) => {
+      if (scheduledSegs.has(i)) return;
+      scheduledSegs.add(i);
+      revealChain = revealChain.then(async () => {
+        await new Promise((r) => setTimeout(r, typingDelayMs(seg)));
+        if (controller.signal.aborted) return;
+        upsertSeg(i, seg, false);
+        const say = speakableText(seg);
+        if (say) voiceService.enqueue(say);
+      });
+    };
+
+    // 第 1 則講完了：結束串流狀態、把剩下沒唸的交給語音
+    const finishFirstSeg = (seg: Segment) => {
+      if (firstSegDone) return;
+      firstSegDone = true;
+      upsertSeg(0, seg, false);
+      if (firstSegText) {
+        const rest = splitter.flush();
+        if (rest) voiceService.enqueue(rest);
+      } else if (speakableText(seg)) {
+        voiceService.enqueue(speakableText(seg));
+      }
+    };
+
+    /** 依目前收到的文字更新畫面：第 1 則逐字顯示，其餘排隊送出 */
+    const render = (raw: string, done: boolean) => {
+      const { complete, partial } = splitSegments(raw, done);
+      if (!firstSegDone) {
+        if (complete.length > 0) {
+          finishFirstSeg(complete[0]);
+        } else if (partial) {
+          // 第 1 則還在講：逐字顯示，每湊滿一句先交給語音
+          const added = partial.slice(firstSegText.length);
+          firstSegText = partial;
+          upsertSeg(0, { content: partial }, true);
+          for (const sentence of splitter.push(added)) voiceService.enqueue(sentence);
+        }
+      }
+      complete.forEach((seg, i) => {
+        if (i > 0) scheduleReveal(i, seg);
+      });
     };
 
     try {
@@ -363,30 +415,21 @@ export default function App() {
         (delta) => {
           if (controller.signal.aborted) return;
           streamedText += delta;
-          upsertPetMsg(streamedText, true);
-          showBubble(streamedText);
-          // 每湊滿一句就先交給語音，不用等整段回覆
-          for (const sentence of splitter.push(delta)) voiceService.enqueue(sentence);
+          render(streamedText, false);
         }
       );
 
       if (controller.signal.aborted) return;
 
-      // 中途斷線但已經講了一半 → 保留已輸出的內容
+      // 中途斷線但已經講了一半 → 保留已輸出的內容；正常結束時用後端整理過的完整回覆
       const finalText =
         data.error && streamedText
           ? `${streamedText}…（訊號中斷了喵）`
           : data.reply || streamedText || '哈…本喵聽到了喵～';
-      upsertPetMsg(finalText, false);
-      showBubble(finalText);
-
-      if (streamedText) {
-        const rest = splitter.flush();
-        if (rest) voiceService.enqueue(rest);
-      } else {
-        // 沒有串流內容（例如沒設定 API key 或錯誤訊息）→ 整段直接講
-        voiceService.speak(finalText);
-      }
+      render(finalText, true);
+      // 等第 2 則之後的訊息都「打完字」送出，才算這輪回覆結束
+      await revealChain;
+      if (controller.signal.aborted) return;
 
       // 後端回傳的情緒訊號 → 桌寵切換情緒動作；聊完心情與好感度也變了，更新一下
       pet.triggerEmotion(data.emotion);
@@ -402,16 +445,18 @@ export default function App() {
       }
     } catch (err: any) {
       if (err?.name === 'AbortError') {
-        // 使用者打斷或送出新訊息：保留已經輸出的部分，結束串流狀態
-        if (petMsgCreated) upsertPetMsg(streamedText, false);
+        // 使用者打斷或送出新訊息：保留已經輸出的部分（第 1 則），還沒送出的就不送了
+        if (createdSegs.has(0) && !firstSegDone) upsertSeg(0, { content: firstSegText }, false);
         return;
       }
       console.warn('Chat fallback triggered:', err);
-      const errorReply = streamedText
-        ? `${streamedText}…（訊號中斷了喵）`
-        : '哈…本喵的神經突觸剛才打結了喵！請再跟我說一次～';
-      upsertPetMsg(errorReply, false);
-      if (!streamedText) triggerSpeak(errorReply);
+      if (streamedText) {
+        render(`${streamedText}…（訊號中斷了喵）`, true);
+      } else {
+        const errorReply = '哈…本喵的神經突觸剛才打結了喵！請再跟我說一次～';
+        upsertSeg(0, { content: errorReply }, false);
+        triggerSpeak(errorReply);
+      }
     } finally {
       if (chatAbortRef.current === controller) {
         chatAbortRef.current = null;

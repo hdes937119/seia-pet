@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Sparkles, Smile, Volume2, VolumeX, Trash2, ArrowLeftRight, CheckCheck, Square, Mic, Loader2, X } from 'lucide-react';
 import { ChatMessage, ChatStyle, PersonalityConfig, MemoryKeyword, ScreenActivity } from '../types';
 import type { VoiceInputState } from '../hooks/useVoiceInput';
+import { STICKERS } from '../services/replyRhythm';
 
 // 把訊息裡的網址變成可點的連結（Electron 裡會由 main.js 交給預設瀏覽器開啟）
 const URL_RE = /(https?:\/\/[^\s]+)/g;
@@ -233,7 +234,13 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 </div>
               )}
 
-              {/* Message content */}
+              {/* Message content（貼圖訊息顯示成大張貼圖卡，不包對話框） */}
+              {msg.sticker && STICKERS[msg.sticker] ? (
+                <div className="flex flex-col items-center justify-center w-24 h-24 rounded-2xl bg-gradient-to-br from-pink-200/90 to-purple-200/90 border-2 border-white/70 shadow-lg select-none">
+                  <span className="text-4xl leading-none">{STICKERS[msg.sticker].emoji}</span>
+                  <span className="mt-1 text-[11px] font-bold text-purple-800">{STICKERS[msg.sticker].label}</span>
+                </div>
+              ) : (
               <div
                 className={`max-w-[78%] sm:max-w-[72%] rounded-2xl px-3.5 py-2.5 text-xs sm:text-sm leading-relaxed shadow-sm ${
                   isUser
@@ -252,6 +259,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   )}
                 </p>
               </div>
+              )}
 
               {/* Timestamps & LINE Read Receipt */}
               <div className="flex flex-col text-[10px] text-slate-500 font-mono pb-0.5 shrink-0">
@@ -288,7 +296,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   style={{ animationDelay: '300ms' }}
                 />
               </div>
-              <span className="text-[11px]">雙子星貓正在思考...（可直接輸入打斷）</span>
+              <span className="text-[11px]">雙子星貓輸入中…（可直接輸入打斷）</span>
               {onInterrupt && (
                 <button
                   type="button"

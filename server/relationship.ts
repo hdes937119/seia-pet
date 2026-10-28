@@ -225,10 +225,17 @@ export function createRelationship(dataDir: string) {
       `【你現在的心情】：${m.label}${s.moodReason ? `（因為${s.moodReason}）` : ''}。${m.tone}。讓語氣自然帶出這個心情，不要直接說出數字或「我的心情是…」。`,
       `【你們的關係】：${lv.name}（認識第 ${days} 天，連續 ${s.streakDays} 天見面）。${lv.hint}。`,
     ];
-    if (s.nickname && lv.index >= 2) lines.push(`你平常叫主人「${s.nickname}」（不用每句都叫）。`);
-    if (lv.index >= 2 && s.insideJokes.length > 0) {
-      const picks = [...s.insideJokes].sort(() => Math.random() - 0.5).slice(0, 2);
-      lines.push(`【你們之間的梗（偶爾、自然地提起就好，不要每次都講）】：${picks.map((j) => j.text).join('；')}`);
+    // 暱稱與共同的梗：真人朋友不會每句都叫暱稱、每次都講同一個梗 → 用機率決定這次能不能用
+    if (s.nickname && lv.index >= 2) {
+      lines.push(
+        Math.random() < 0.3
+          ? `你給主人取的暱稱是「${s.nickname}」，這次可以自然地叫一次。`
+          : `（你給主人取過暱稱「${s.nickname}」，但這次不要用暱稱稱呼他。）`
+      );
+    }
+    if (lv.index >= 2 && s.insideJokes.length > 0 && Math.random() < 0.25) {
+      const pick = s.insideJokes[Math.floor(Math.random() * s.insideJokes.length)];
+      lines.push(`【你們之間的梗（如果跟話題搭得上，可以順口提一下；搭不上就別硬提）】：${pick.text}`);
     }
     return lines.join('\n');
   }

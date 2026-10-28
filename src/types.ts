@@ -25,6 +25,7 @@ export interface ChatMessage {
   timestamp: string;
   isRead?: boolean;
   isStreaming?: boolean; // AI 回覆還在逐字輸出中
+  sticker?: string; // 貼圖訊息（名稱對應 src/services/replyRhythm.ts 的 STICKERS）
 }
 
 export interface DiscoveredVideo {

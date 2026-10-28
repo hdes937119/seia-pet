@@ -209,6 +209,7 @@ class VoiceService {
   // 濾水器：清空特殊符號、隱藏標記與網址
   private static cleanForSpeech(text: string) {
     return text
+      .replace(/\[\[[^\]]*\]\]/g, ' ') // [[NEXT]]、[[STICKER:…]] 這類節奏標記不唸
       .replace(/[*#_`~\[\]\(\)>✦🐾]/g, ' ')
       .replace(/<!--[\s\S]*?(-->|$)/g, '')
       .replace(/https?:\/\/\S+/g, '')
