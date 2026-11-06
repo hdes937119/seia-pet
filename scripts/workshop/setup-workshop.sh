@@ -161,26 +161,16 @@ http
 JS
 echo "已寫入 ~/workshop/gemini-proxy.mjs（Gemini 轉接站）"
 
-say "5/5 試做一個小東西（在沙盒裡、只能寫 ~/workshop/test）"
-mkdir -p "$HOME/workshop/test"
-cd "$HOME/workshop/test"
-# 這一版 dsh（0.2.x）的權限是用環境變數設定，不是命令列參數；先把說明存起來，失敗時方便除錯
+say "5/5 檢查（不呼叫 Gemini）"
+# 11/7：以前這一步用 dsh 實際試做一個網頁，但 11/4 起工坊裡只有假金鑰（真的由桌寵開工時交給轉接站），
+# 在這裡試做一定失敗，還害後面的隔離沒做。改成只檢查工具都在；真正的試做請在桌寵的工坊面板按「去做吧」。
 dsh --help > "$HOME/workshop/dsh-help.txt" 2>&1 || true
-node "$HOME/workshop/gemini-proxy.mjs" & PROXY_PID=$!
-trap 'kill $PROXY_PID 2>/dev/null' EXIT
-sleep 1
-if DSH_PERMISSION_MODE=workspace-write dsh --profile headless --patch "$HOME/workshop/seia.patch.yml" \
-  "在目前資料夾建立 hello.html：一個深藍色背景、中間有一顆會閃爍的星星和文字「西雅的工坊開張了」的單一 HTML 檔案。做完只回答 OK。"; then
-  ls -la "$HOME/workshop/test"
-  echo "✅ 工坊測試成功"
-else
-  echo "---- dsh --help（給 Claude 看）----"
-  head -n 60 "$HOME/workshop/dsh-help.txt"
-  echo "---- 設定檔格式裡跟 compat 有關的部分（給 Claude 看）----"
-  dsh --profile headless --dump-config-schema 2>/dev/null | grep -o '"[a-z-]*-\(completions\|responses\|generative-ai\|vertex\|messages\)"' | sort -u | head -n 30
-  echo "❌ 工坊測試失敗：把上面的錯誤訊息貼給 Claude"
-  exit 1
-fi
+CHECK_OK=1
+command -v bwrap >/dev/null 2>&1 && bwrap --version || { echo "⚠️ 找不到 bubblewrap（dsh 的沙盒）"; CHECK_OK=0; }
+node -v || CHECK_OK=0
+dsh --version || CHECK_OK=0
+node --check "$HOME/workshop/gemini-proxy.mjs" && echo "轉接站語法 OK" || CHECK_OK=0
+[ -s "$HOME/workshop/seia.patch.yml" ] && echo "模型設定 OK" || CHECK_OK=0
 
 say "隔離：讓工坊看不到你的 C 槽、也不能執行 Windows 程式"
 sudo tee /etc/wsl.conf > /dev/null <<'CONF'
@@ -193,3 +183,10 @@ enabled = false
 appendWindowsPath = false
 CONF
 echo "已寫入 /etc/wsl.conf（關掉 WSL 之後生效）"
+
+if [ "$CHECK_OK" = 1 ]; then
+  echo "✅ 工坊測試成功（工具都在；真正的試做請重開桌寵後在工坊面板按「去做吧」）"
+else
+  echo "❌ 工坊測試失敗：有工具沒裝好，把上面的訊息貼給 Claude"
+  exit 1
+fi

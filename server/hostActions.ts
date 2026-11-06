@@ -18,6 +18,7 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { spawn } from 'child_process';
+import { decodeOutput } from './winText';
 
 export type StepType = 'winget' | 'download' | 'open' | 'write_file';
 export interface ActionStep {
@@ -141,27 +142,31 @@ export function normalizeSteps(raw: any[]): { steps: ActionStep[]; problems: str
 
 function run(cmd: string, args: string[], timeoutMs: number): Promise<{ code: number | null; out: string }> {
   return new Promise((resolve) => {
-    let out = '';
     let child;
     try {
       child = spawn(cmd, args, { windowsHide: true });
     } catch (err: any) {
       return resolve({ code: -1, out: String(err?.message || err) });
     }
+    // winget 在繁中系統可能輸出 Big5：收集原始位元組，最後再猜編碼（winText.ts）
+    const chunks: Buffer[] = [];
+    let size = 0;
     const add = (d: Buffer) => {
-      out += d.toString('utf8');
-      if (out.length > 20000) out = out.slice(-15000);
+      chunks.push(d);
+      size += d.length;
+      while (size > 200_000 && chunks.length > 1) size -= chunks.shift()!.length;
     };
+    const text = () => decodeOutput(Buffer.concat(chunks)).slice(-15000);
     child.stdout?.on('data', add);
     child.stderr?.on('data', add);
     const killer = setTimeout(() => child.kill(), timeoutMs);
     child.on('error', (err: any) => {
       clearTimeout(killer);
-      resolve({ code: -1, out: `${out}\n${err?.message || err}` });
+      resolve({ code: -1, out: `${text()}\n${err?.message || err}` });
     });
     child.on('close', (code: number | null) => {
       clearTimeout(killer);
-      resolve({ code, out });
+      resolve({ code, out: text() });
     });
   });
 }

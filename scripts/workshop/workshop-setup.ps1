@@ -3,7 +3,12 @@
   第一次執行：安裝 WSL2 和專用的 Ubuntu（需要系統管理員，可能要重新開機）
   重新開機、建立 Ubuntu 帳號密碼後再執行一次：安裝 Node.js、dsh、設定 Gemini、試做一個小東西、最後把工坊跟 C 槽隔開
 #>
-$ErrorActionPreference = 'Stop'
+# 11/7：原本是 'Stop'，但 Windows PowerShell 5.1 會把 wsl.exe 的錯誤輸出當成例外，還沒走到安裝就整個停掉。
+# 這個腳本每一步都自己看 $LASTEXITCODE，所以用 Continue。
+$ErrorActionPreference = 'Continue'
+# wsl.exe 自己的訊息改用 UTF-8（不然是亂碼）；畫面也用 UTF-8 顯示
+$env:WSL_UTF8 = '1'
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 $Distro = 'seia-workshop'
 function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
 function Distros { @((wsl.exe -l -q 2>$null) | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ }) }
@@ -17,7 +22,7 @@ try { $have = (Distros) -contains $Distro } catch { $have = $false }
 if (-not $have) {
   if (-not $isAdmin) {
     Say '第一次安裝需要系統管理員權限，馬上會跳出確認視窗。' Yellow
-    Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+    Start-Process powershell -Verb RunAs -ArgumentList "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     exit 0
   }
   # Windows 內建的舊版 wsl.exe 不認得 --name（也沒有 --version）：先升級成新版 WSL，重開機後再裝 Ubuntu
@@ -54,7 +59,7 @@ $here = (Resolve-Path $PSScriptRoot).Path
 # 把安裝腳本複製進工坊（用 base64，不靠掛載 C 槽，隔離之後也能重跑；也不會被 Windows 換行和編碼弄亂）
 $bytes = [IO.File]::ReadAllBytes((Join-Path $here 'setup-workshop.sh'))
 $b64 = [Convert]::ToBase64String($bytes)
-wsl.exe -d $Distro --cd '~' -- bash -c "echo $b64 | base64 -d > ~/setup-workshop.sh && chmod +x ~/setup-workshop.sh"
+wsl.exe -d $Distro --cd '~' -- bash -c "echo $b64 | base64 -d | tr -d '\r' > ~/setup-workshop.sh && chmod +x ~/setup-workshop.sh"
 if ($LASTEXITCODE -ne 0) { Say '複製安裝腳本失敗。' Red; Read-Host '按 Enter 關閉'; exit 1 }
 # 11/4 起工坊裡不放真金鑰（由桌寵開工時交給轉接站代填），這裡不再要求輸入金鑰
 if ($false) {

@@ -9,6 +9,7 @@
  * - 掛載：wsl.exe -u root 用 drvfs 唯讀掛到 /mnt/seia/<id>；工坊平常仍然看不到 C 槽。
  * 存在 data/workshop/folders.json。
  */
+import { wslEnv, collector } from './winText';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -220,18 +221,18 @@ export function createFolders(dataDir: string, deps: FolderDeps) {
   function runRoot(script: string): Promise<string> {
     return new Promise((res) => {
       const cmd = `echo ${b64(script)} | base64 -d | bash`;
-      const child = spawn('wsl.exe', ['-d', deps.distro, '-u', 'root', '-e', 'bash', '-c', cmd], { windowsHide: true });
-      let out = '';
-      child.stdout.on('data', (d) => (out += d.toString('utf8')));
-      child.stderr.on('data', (d) => (out += d.toString('utf8')));
+      const child = spawn('wsl.exe', ['-d', deps.distro, '-u', 'root', '-e', 'bash', '-c', cmd], { windowsHide: true, env: wslEnv() });
+      const out = collector();
+      child.stdout.on('data', (d: Buffer) => out.push(d));
+      child.stderr.on('data', (d: Buffer) => out.push(d));
       const t = setTimeout(() => child.kill(), 30_000);
       child.on('error', (e) => {
         clearTimeout(t);
-        res(`${out}\n${e.message}`);
+        res(`${out.text()}\n${e.message}`);
       });
       child.on('close', () => {
         clearTimeout(t);
-        res(out);
+        res(out.text());
       });
     });
   }
@@ -276,12 +277,12 @@ export function createFolders(dataDir: string, deps: FolderDeps) {
     if (!m.length) return { ok: false, reason: '掛不上（詳細原因在 pet.log 的 [資料夾]）' };
     try {
       const out = await new Promise<string>((res) => {
-        const child = spawn('wsl.exe', ['-d', deps.distro, '-e', 'bash', '-c', `ls -A "${m[0].mountPoint}" | head -n 15; touch "${m[0].mountPoint}/.seia-write-test" 2>/dev/null && echo "===SEIA:WRITABLE" && rm -f "${m[0].mountPoint}/.seia-write-test"`], { windowsHide: true });
-        let o = '';
-        child.stdout.on('data', (d) => (o += d.toString('utf8')));
-        child.stderr.on('data', (d) => (o += d.toString('utf8')));
+        const child = spawn('wsl.exe', ['-d', deps.distro, '-e', 'bash', '-c', `ls -A "${m[0].mountPoint}" | head -n 15; touch "${m[0].mountPoint}/.seia-write-test" 2>/dev/null && echo "===SEIA:WRITABLE" && rm -f "${m[0].mountPoint}/.seia-write-test"`], { windowsHide: true, env: wslEnv() });
+        const o = collector();
+        child.stdout.on('data', (d: Buffer) => o.push(d));
+        child.stderr.on('data', (d: Buffer) => o.push(d));
         const t = setTimeout(() => child.kill(), 20_000);
-        child.on('close', () => (clearTimeout(t), res(o)));
+        child.on('close', () => (clearTimeout(t), res(o.text())));
         child.on('error', (e) => (clearTimeout(t), res(e.message)));
       });
       if (out.includes('===SEIA:WRITABLE')) return { ok: false, reason: '⚠️ 掛上去竟然寫得進去（應該是唯讀），先不要用，請告訴 Claude' };

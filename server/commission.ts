@@ -139,6 +139,8 @@ export interface CommissionDeps {
   exclusive: <T>(label: string, fn: (run: (script: string, stdin: string, timeoutSec: number) => Promise<{ stdout: string; stderr: string; code: number | null }>) => Promise<T>) => Promise<T | null> | null;
   /** 今天這個委託花了多少（台幣） */
   costToday: (id: string) => number;
+  /** 工坊不能用的原因（例如這台電腦還沒裝工坊）；空字串＝可以用 */
+  unavailable?: () => string;
   log?: (m: string) => void;
 }
 
@@ -527,6 +529,8 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
   /** 開工（不等做完；做完呼叫 onDone） */
   function startJob(c: Commission, goal: string, detail: string, onDone: (c: Commission, j: ProjectJob) => void | Promise<void>): { ok: boolean; reason?: string; job?: ProjectJob } {
     if (runningJob(c)) return { ok: false, reason: '這個委託已經有一件在做了' };
+    const down = deps.unavailable?.();
+    if (down) return { ok: false, reason: down };
     if (overBudget(c)) return { ok: false, reason: `今天的委託額度（NT$${c.dailyBudgetTwd}）用完了` };
     const maxJobs = Number(process.env.COMMISSION_JOBS_PER_DAY) || 4;
     const today = c.jobs.filter((j) => commissionDayKey(j.at) === commissionDayKey() && j.status !== 'failed').length;
@@ -590,6 +594,8 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
   async function runTool(c: Commission, trigger: ToolRun['trigger']): Promise<{ ok: boolean; reason?: string; run?: ToolRun }> {
     const t = c.tool;
     if (!t) return { ok: false, reason: '這個委託還沒有工具' };
+    const down = deps.unavailable?.();
+    if (down) return { ok: false, reason: down };
     if (runningJob(c)) return { ok: false, reason: '工坊正在改這個專案，等它做完再跑' };
     if (process.platform !== 'win32' && !process.env.WORKSHOP_ALLOW_NON_WINDOWS) return { ok: false, reason: '工坊只能在 Windows 上透過 WSL 使用' };
     let tarB64 = '';
@@ -676,12 +682,12 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
     if (focus) {
       const k = waiting(focus);
       const lastJob = [...focus.jobs].reverse().find((j) => j.status !== 'running');
-      const notes = focus.projectId && notebook ? notebook(focus.projectId).slice(-4) : [];
+      const notes = focus.projectId && notebook ? notebook(focus.projectId).slice(-2) : [];
       parts.push(`「${focus.title}」的細節：
 主人的委託：${focus.direction}${focus.constraints ? `（限制：${focus.constraints}）` : ''}
-計畫：${(focus.plan || '（還在寫）').slice(0, 900)}
+計畫：${(focus.plan || '（還在寫）').slice(0, 400)}${(focus.plan || '').length > 400 ? '…（完整的用 commission_status 查）' : ''}
 階段：${focus.stages.map((s, i) => `${i + 1}.${s.title}${i === focus.stage ? '←目前' : ''}`).join(' ')}
-${k ? `⏳ 正在等主人回覆的檢查點（${k.kind === 'plan' ? '計畫' : `第 ${(k.stage ?? 0) + 1} 階段`}）：${k.report.slice(0, 500)}${k.ask ? `\n你問主人的：${k.ask}` : ''}\n` : ''}${lastJob ? `最近一次工坊工作（${lastJob.status === 'done' ? '完成' : '失敗'}）：${(lastJob.result || lastJob.error || '').slice(0, 400)}\n` : ''}${focus.tool ? `給主人的工具「${focus.tool.title}」：${focus.tool.desc}${focus.runs.length ? `；最近一次執行${focus.runs[focus.runs.length - 1].ok ? '成功' : '失敗'}` : ''}（主人可以在設定面板按「立即執行」）\n` : ''}${notes.length ? `你最近的研究筆記：\n${notes.map((n) => `  ${n.slice(0, 200)}`).join('\n')}\n` : ''}`);
+${k ? `⏳ 正在等主人回覆的檢查點（${k.kind === 'plan' ? '計畫' : `第 ${(k.stage ?? 0) + 1} 階段`}）：${k.report.slice(0, 350)}${k.ask ? `\n你問主人的：${k.ask}` : ''}\n` : ''}${lastJob ? `最近一次工坊工作（${lastJob.status === 'done' ? '完成' : '失敗'}）：${(lastJob.result || lastJob.error || '').slice(0, 200)}\n` : ''}${focus.tool ? `給主人的工具「${focus.tool.title}」：${focus.tool.desc}${focus.runs.length ? `；最近一次執行${focus.runs[focus.runs.length - 1].ok ? '成功' : '失敗'}` : ''}（主人可以在設定面板按「立即執行」）\n` : ''}${notes.length ? `你最近的研究筆記：\n${notes.map((n) => `  ${n.slice(0, 150)}`).join('\n')}\n` : ''}`);
     }
     parts.push('聊到委託時照實說進度，不要說還沒做的已經做好了（細節不確定就用 commission_status 查）。主人對委託給意見、同意或要修改時，照規則 12 處理。');
     return parts.join('\n');

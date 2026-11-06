@@ -15,6 +15,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { tokenize } from './recall';
 import type { Folders, Mounted } from './folders';
+import { wslEnv, collector, decodeOutput, isWorkshopMissing } from './winText';
 
 export interface WorkFile {
   path: string;
@@ -427,7 +428,53 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
   /** 今天做好的成品數（失敗的不算，同一件反覆嘗試也不重算） */
   const todayCount = (now = Date.now()) => todayWorks(now).filter((w) => w.status !== 'failed' && w.status !== 'running').length;
 
+  /* ===== 工坊在不在（11/7：新電腦還沒裝工坊時，西雅把亂碼的錯誤誤判成「工坊壞了」） ===== */
+  let health: { ok: boolean; at: number; reason?: string } | null = null;
+  const MISSING_REASON = `這台電腦上找不到工坊（WSL 的「${deps.distro}」還沒安裝）；要主人跑 scripts\\workshop\\workshop-setup.bat 裝好`;
+  /** 每次跑完 WSL 都看一下輸出：看到「沒有安裝發行版」之類的就記成工坊不在 */
+  function noteHealth(stdout: string, stderr: string) {
+    if (isWorkshopMissing(`${stderr}\n${stdout.slice(0, 2000)}`) && !stdout.includes('===SEIA:')) {
+      if (!health || health.ok) log(`[工坊] ⚠️ ${MISSING_REASON}`);
+      health = { ok: false, at: Date.now(), reason: MISSING_REASON };
+    } else if (stdout.includes('===SEIA:')) health = { ok: true, at: Date.now() };
+  }
+  /** 主動檢查：wsl.exe -l -q 有沒有這個發行版（成功的結果記 10 分鐘、失敗的記 2 分鐘） */
+  function checkDistro(): Promise<{ ok: boolean; reason?: string }> {
+    if (process.platform !== 'win32' && !process.env.WORKSHOP_ALLOW_NON_WINDOWS) return Promise.resolve({ ok: false, reason: '工坊只能在 Windows 上透過 WSL 使用' });
+    if (process.env.WORKSHOP_ALLOW_NON_WINDOWS) return Promise.resolve({ ok: true });
+    if (health && Date.now() - health.at < (health.ok ? 10 : 2) * 60_000) return Promise.resolve(health);
+    return new Promise((resolve) => {
+      let child;
+      try {
+        child = spawn('wsl.exe', ['-l', '-q'], { windowsHide: true, env: wslEnv() });
+      } catch (e: any) {
+        health = { ok: false, at: Date.now(), reason: `叫不動 wsl.exe（${e?.message || e}）` };
+        return resolve(health);
+      }
+      const out = collector();
+      child.stdout.on('data', (d: Buffer) => out.push(d));
+      child.stderr.on('data', (d: Buffer) => out.push(d));
+      const t = setTimeout(() => child.kill(), 20_000);
+      const finish = (extra = '') => {
+        clearTimeout(t);
+        const text = `${out.text()}${extra}`;
+        const names = text.split(/\r?\n/).map((x) => x.replace(/\u0000/g, '').trim()).filter(Boolean);
+        const ok = names.includes(deps.distro);
+        const prev = health;
+        health = ok ? { ok: true, at: Date.now() } : { ok: false, at: Date.now(), reason: isWorkshopMissing(text) || names.length ? MISSING_REASON : `檢查工坊時 wsl.exe 回：${text.slice(0, 200)}` };
+        if (!ok && (!prev || prev.ok)) log(`[工坊] ⚠️ ${health.reason}`);
+        if (ok && prev && !prev.ok) log('[工坊] 工坊回來了（找到 WSL 的發行版）');
+        resolve(health);
+      };
+      child.on('error', (e: any) => finish(`\n${e?.message || e}`));
+      child.on('close', () => finish());
+    });
+  }
+  /** 最近一次知道的狀態（不跑指令） */
+  const knownMissing = () => Boolean(health && !health.ok && Date.now() - health.at < 30 * 60_000);
+
   function canStart(now = Date.now()): { ok: boolean; reason?: string } {
+    if (knownMissing()) return { ok: false, reason: health!.reason };
     if (process.platform !== 'win32' && !process.env.WORKSHOP_ALLOW_NON_WINDOWS) return { ok: false, reason: '工坊只能在 Windows 上透過 WSL 使用' };
     if (busy) return { ok: false, reason: '她正在工坊裡做別的東西' };
     if (todayCount(now) >= dailyMax()) return { ok: false, reason: `今天已經做好 ${todayCount(now)} 件，明天再說` };
@@ -437,6 +484,7 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
 
   function canStartLab(now = Date.now()): { ok: boolean; reason?: string } {
     if (process.env.WORKSHOP_LAB === 'false') return { ok: false, reason: '主人把工坊實驗室關掉了' };
+    if (knownMissing()) return { ok: false, reason: health!.reason };
     if (process.platform !== 'win32' && !process.env.WORKSHOP_ALLOW_NON_WINDOWS) return { ok: false, reason: '工坊只能在 Windows 上透過 WSL 使用' };
     if (busy) return { ok: false, reason: '工坊正在忙別的東西' };
     if (todayLabCount(now) >= labDailyMax()) return { ok: false, reason: `今天的實驗室已經用了 ${todayLabCount(now)} 次，明天再說` };
@@ -448,22 +496,23 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
     return new Promise((resolve) => {
       // 腳本第一行會從標準輸入讀一行（真金鑰，交給轉接站）；金鑰不放在指令參數裡（參數在工坊裡看得到）
       const cmd = `echo ${b64(script)} | base64 -d > /tmp/seia-job.sh && bash /tmp/seia-job.sh`;
-      const child = spawn('wsl.exe', ['-d', deps.distro, '-e', 'bash', '-c', cmd], { windowsHide: true });
+      const child = spawn('wsl.exe', ['-d', deps.distro, '-e', 'bash', '-c', cmd], { windowsHide: true, env: wslEnv() });
       child.stdin.on('error', () => {});
       child.stdin.end(stdinText ? `${stdinText}\n` : '\n');
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (d) => (stdout += d.toString('utf8')));
-      child.stderr.on('data', (d) => (stderr += d.toString('utf8')));
+      const out = collector(64 * 1024 * 1024);
+      const err = collector();
+      child.stdout.on('data', (d: Buffer) => out.push(d));
+      child.stderr.on('data', (d: Buffer) => err.push(d));
       const killer = setTimeout(() => child.kill(), timeoutSec * 1000);
-      child.on('error', (err) => {
+      const done = (code: number | null, extra = '') => {
         clearTimeout(killer);
-        resolve({ stdout, stderr: `${stderr}\n${err.message}`, code: -1 });
-      });
-      child.on('close', (code) => {
-        clearTimeout(killer);
+        const stdout = out.text();
+        const stderr = `${err.text()}${extra}`;
+        noteHealth(stdout, stderr);
         resolve({ stdout, stderr, code });
-      });
+      };
+      child.on('error', (e) => done(-1, `\n${e.message}`));
+      child.on('close', (code) => done(code));
     });
   }
 
@@ -472,23 +521,26 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
    * 腳本的標準輸入第一行之後可以接很長的資料（工作區的 tar.gz）。
    */
   function exclusive<T>(label: string, fn: (run: (script: string, stdin: string, timeoutSec: number) => Promise<{ stdout: string; stderr: string; code: number | null }>) => Promise<T>): Promise<T> | null {
-    if (busy) return null;
+    if (busy || knownMissing()) return null;
     busy = label;
     log(`[工坊] ${label}`);
     const raw = (script: string, stdin: string, timeoutSec: number) =>
       new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
         const cmd = `echo ${b64(script)} | base64 -d > /tmp/seia-job.sh && bash /tmp/seia-job.sh`;
-        const child = spawn('wsl.exe', ['-d', deps.distro, '-e', 'bash', '-c', cmd], { windowsHide: true });
+        const child = spawn('wsl.exe', ['-d', deps.distro, '-e', 'bash', '-c', cmd], { windowsHide: true, env: wslEnv() });
         child.stdin.on('error', () => {});
         child.stdin.end(`${stdin}\n`);
         const chunks: Buffer[] = [];
-        let stderr = '';
+        const err = collector();
         child.stdout.on('data', (d: Buffer) => chunks.push(d));
-        child.stderr.on('data', (d) => (stderr += d.toString('utf8')));
+        child.stderr.on('data', (d: Buffer) => err.push(d));
         const killer = setTimeout(() => child.kill(), timeoutSec * 1000);
         const done = (code: number | null, extra = '') => {
           clearTimeout(killer);
-          resolve({ stdout: Buffer.concat(chunks).toString('utf8'), stderr: `${stderr}${extra}`, code });
+          const stdout = decodeOutput(Buffer.concat(chunks));
+          const stderr = `${err.text()}${extra}`;
+          noteHealth(stdout, stderr);
+          resolve({ stdout, stderr, code });
         };
         child.on('error', (err) => done(-1, `\n${err.message}`));
         child.on('close', (code) => done(code));
@@ -815,7 +867,7 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
       .map((w) => `${w.kind === 'lab' ? '（實驗室）' : ''}「${w.title}」${w.superseded ? '第一版自己看了不滿意，重做' : w.status === 'failed' ? `沒做成功${w.error ? `（${w.error.slice(0, 40)}）` : ''}` : '做好了'}${w.comment ? `，你的心得：${w.comment}` : ''}${w.lesson ? `，學到：${w.lesson}` : ''}`);
   }
 
-  return { exclusive, isBusy, canStartLab, writeSkillTest, findSkills, addSkills, markSkillResult, markSkillsMaster, skillNames, skillsText, isBackfilled, markBackfilled, savePlaytest, setPlaytestSeen, untestedExperiments, autoAllowed, setAutoEnabled, canStart, start, get, addNote, dayRecap, describeTool, toolAvailable, supersede, setStatus, remove, filePath, entrySource, describeForChat, markToldIfMentioned, snapshot };
+  return { checkDistro, knownMissing, healthReason: () => (health && !health.ok ? health.reason : ''), exclusive, isBusy, canStartLab, writeSkillTest, findSkills, addSkills, markSkillResult, markSkillsMaster, skillNames, skillsText, isBackfilled, markBackfilled, savePlaytest, setPlaytestSeen, untestedExperiments, autoAllowed, setAutoEnabled, canStart, start, get, addNote, dayRecap, describeTool, toolAvailable, supersede, setStatus, remove, filePath, entrySource, describeForChat, markToldIfMentioned, snapshot };
 }
 
 export type Workshop = ReturnType<typeof createWorkshop>;

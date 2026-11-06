@@ -7,6 +7,7 @@
 $ErrorActionPreference = 'Continue'
 $Distro = 'seia-workshop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
+$env:WSL_UTF8 = '1'
 function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
 
 $here = (Resolve-Path $PSScriptRoot).Path
@@ -25,7 +26,7 @@ $pathB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($testDir))
 
 # 檢查腳本用 base64 送進工坊（工坊看不到 C 槽）
 $sh = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $here 'inspect-workshop.sh')))
-$put = "f=/tmp/seia-inspect-`$(id -u).sh; echo $sh | base64 -d > `$f"
+$put = "f=/tmp/seia-inspect-`$(id -u).sh; echo $sh | base64 -d | tr -d '\r' > `$f"
 
 $log = New-Object System.Collections.Generic.List[string]
 $log.Add("西雅工坊檢查 $(Get-Date -Format 'yyyy-MM-dd HH:mm')")

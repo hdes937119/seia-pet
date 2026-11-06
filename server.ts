@@ -61,6 +61,7 @@ import { repeatedPhrases, repeatPrompt, repeatHits, cleanReply } from './server/
 import { createBrowser } from './server/browser';
 import { CHAT_TOOL_DECLS, runToolLoopStream, runToolLoop, type ToolRunner } from './server/chatTools';
 import { createToolbox } from './server/toolbox';
+import { isWorkshopMissing } from './server/winText';
 import { createHostActions, type ActionPlan } from './server/hostActions';
 import { createCommissions, defaultBudget, APPROVE_RE, NEGATE_RE, STOP_RE, PAUSE_RE, RESUME_RE, type Commission, type ProjectJob } from './server/commission';
 
@@ -3171,6 +3172,7 @@ const commissions = createCommissions(DATA_DIR, {
   apiKey: () => process.env.GEMINI_API_KEY || '',
   exclusive: (label, fn) => workshop.exclusive(label, fn),
   costToday: (id) => usage.taskCostTwd(`commission:${id}`),
+  unavailable: () => (workshop.knownMissing() ? workshop.healthReason() || '工坊現在不能用' : ''),
   log: (m) => console.log(m),
 });
 const commissionTask = (c: Commission) => `commission:${c.id}`;
@@ -3584,7 +3586,12 @@ async function runCommissionCycle(c: Commission) {
   const lastJob = [...c.jobs].reverse().find((j) => j.status !== 'running');
   const st = c.stages[c.stage];
   const handoff = commissions.readWs(c, 'HANDOFF.md', 2000);
-  const extraOpening = `===== 這一輪是主人的委託「${c.title}」（委託 id：${c.id}）=====
+  // 11/7：她把「這台電腦當時還沒裝工坊」的失敗誤判成「工坊壞了」→ 開工前檢查過工坊在，就明講
+  const missingFails = c.jobs.filter((j) => j.status === 'failed' && isWorkshopMissing(String(j.error || ''))).length;
+  const workshopNote = missingFails
+    ? `\n【注意】之前有 ${missingFails} 次工坊工作失敗，原因是那時這台電腦還沒裝工坊（WSL），不是程式或做法的問題，也不是 Python／Node.js 不能用。現在程式檢查過，工坊已經裝好可以用了：照原本的計畫用 project_work 重新開工，不要再報告「工坊壞掉」。\n`
+    : '';
+  const extraOpening = `===== 這一輪是主人的委託「${c.title}」（委託 id：${c.id}）=====${workshopNote}
 主人的委託：${c.direction}
 ${c.constraints ? `主人的限制：${c.constraints}\n` : ''}計畫：
 ${c.plan || '（沒有）'}
@@ -3661,6 +3668,11 @@ async function onCommissionJobDone(c: Commission, j: ProjectJob) {
   if (j.usage?.capped) console.log(`[委託] 「${c.title}」這次工作用到 token 上限，轉接站擋下了後面的呼叫`);
   const pid = c.projectId;
   if (j.status !== 'done') {
+    if (isWorkshopMissing(String(j.error || ''))) {
+      if (pid) research.append(pid, 'result', `專案工作「${j.goal.slice(0, 60)}」沒開成：這台電腦上找不到工坊（WSL 還沒裝好），不是程式或做法的問題。`);
+      await pauseForWorkshop(c);
+      return;
+    }
     if (pid) research.append(pid, 'result', `專案工作「${j.goal.slice(0, 60)}」失敗了：${String(j.error || '').slice(0, 400)}`);
     if (eventClients.size && proactive.request('discovery')) pushEvent('pet-says', { text: `嗚…委託「${c.title}」這次在工坊沒做成`.slice(0, 50), emotion: 'sad' });
     return;
@@ -3676,12 +3688,34 @@ async function onCommissionJobDone(c: Commission, j: ProjectJob) {
   if (eventClients.size && proactive.request('discovery')) pushEvent('pet-says', { text: `委託「${c.title}」又往前做了一步喵`.slice(0, 50), emotion: 'happy' });
 }
 
+/** 工坊不在這台電腦上（還沒裝 WSL／seia-workshop）：委託先暫停，跟主人說一次（不然每一輪都會先花額度想、到開工才失敗） */
+async function pauseForWorkshop(c: Commission) {
+  if (c.status !== 'active') return;
+  commissions.setStatus(c, 'paused');
+  commissions.addFeedback(c, '（系統）這台電腦上找不到工坊，委託先自動暫停；工坊裝好後主人按「繼續」就會接著做。之前的失敗不是做法的問題。', 'system');
+  console.log(`[委託] 「${c.title}」因為找不到工坊，自動暫停`);
+  await commissionNotify(
+    `工坊不見了，「${c.title}」我先暫停喔`,
+    `這台電腦上找不到我的工坊（WSL 裡的 seia-workshop），「${c.title}」先自動暫停了。\n裝好的方法：用系統管理員身分跑 scripts\\workshop\\workshop-setup.bat。裝好後到設定面板「主人的委託」按「繼續」，我就會接著做。`,
+    'sad'
+  );
+}
+
 /** 每 5 分鐘：排程工具、補寫計畫、委託的下一輪 */
 let commissionTicking = false;
 async function commissionTick() {
   if (commissionTicking) return;
   commissionTicking = true;
   try {
+    const due = commissions.open().filter((c) => c.status === 'active' && commissions.cycleDue(c).ok);
+    // 要用到工坊之前先確認工坊在不在（成功的結果記 10 分鐘，不會每次都跑）
+    if (commissions.toolsDue().length || due.length) {
+      const h = await workshop.checkDistro();
+      if (!h.ok) {
+        for (const c of due) await pauseForWorkshop(c);
+        return;
+      }
+    }
     for (const c of commissions.toolsDue()) {
       if (workshop.isBusy()) break;
       const r = await commissions.runTool(c, 'schedule');

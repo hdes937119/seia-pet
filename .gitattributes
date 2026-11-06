@@ -1,0 +1,4 @@
+# 11/7：.sh 一律用 Linux 換行（工坊裡的 bash 讀到 Windows 換行會壞掉）
+*.sh text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
