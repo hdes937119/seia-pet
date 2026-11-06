@@ -11,7 +11,8 @@
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://127.0.0.1:3000 && electron .\"",
     "clean": "node -e \"for (const p of ['dist','server.js']) require('fs').rmSync(p,{recursive:true,force:true})\"",
     "lint": "tsc --noEmit",
-    "pack:migrate": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack-migration.ps1"
+    "pack:migrate": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack-migration.ps1",
+    "pack:update": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack-update.ps1"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -35,7 +36,7 @@
     "autoprefixer": "^10.4.21",
     "concurrently": "^10.0.6",
     "electron": "^45.0.0",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.0",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",

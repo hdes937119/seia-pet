@@ -7,11 +7,26 @@ interface RelationshipCardProps {
   snapshot: RelationshipSnapshot | null;
   onNicknameChange: (nickname: string) => void;
   onRemoveJoke: (id: string) => void;
+  onPatch?: (patch: { nicknameOff?: boolean; unrefuse?: string }) => void;
 }
 
-export const RelationshipCard: React.FC<RelationshipCardProps> = ({ snapshot, onNicknameChange, onRemoveJoke }) => {
+export const RelationshipCard: React.FC<RelationshipCardProps> = ({ snapshot, onNicknameChange, onRemoveJoke, onPatch }) => {
   const [nickname, setNickname] = useState(snapshot?.nickname || '');
   useEffect(() => setNickname(snapshot?.nickname || ''), [snapshot?.nickname]);
+  // 她自己寫的核心筆記（每天凌晨反思一次）
+  const [core, setCore] = useState<Array<{ id: string; about: 'master' | 'self'; text: string; evidence: string[]; tentative?: boolean }>>([]);
+  useEffect(() => {
+    fetch('/api/core-memory')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => j && setCore(Array.isArray(j.notes) ? j.notes : []))
+      .catch(() => {});
+  }, [snapshot?.affection]);
+  const removeCore = (id: string) => {
+    fetch(`/api/core-memory/${id}`, { method: 'DELETE', headers: { 'X-Gemini-Pet': '1' } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => j && setCore(Array.isArray(j.notes) ? j.notes : []))
+      .catch(() => {});
+  };
 
   if (!snapshot) {
     return <p className="text-[11px] text-slate-500 px-1">讀取關係資料中…（後端沒開的話會看不到）</p>;
@@ -78,6 +93,23 @@ export const RelationshipCard: React.FC<RelationshipCardProps> = ({ snapshot, on
         />
       </div>
 
+      {/* 不要暱稱／她不會再用的稱呼（在對話裡說「別這樣叫我」也會記到這裡） */}
+      <div className="flex flex-wrap items-center gap-1 text-[10px] text-slate-400">
+        <label className="flex items-center gap-1 cursor-pointer mr-2">
+          <input type="checkbox" checked={!!snapshot.nicknameOff} onChange={(e) => onPatch?.({ nicknameOff: e.target.checked })} />
+          不要暱稱
+        </label>
+        {(snapshot.refusedNicknames || []).length > 0 && <span>她不會再用：</span>}
+        {(snapshot.refusedNicknames || []).map((n) => (
+          <span key={n} className="flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full bg-slate-900/80 border border-slate-700 text-slate-300">
+            {n}
+            <button onClick={() => onPatch?.({ unrefuse: n })} className="text-slate-500 hover:text-emerald-400" title="讓她可以再用這個稱呼">
+              <X className="w-3 h-3" />
+            </button>
+          </span>
+        ))}
+      </div>
+
       {/* 共同的梗 */}
       {snapshot.insideJokes.length > 0 && (
         <div>
@@ -92,6 +124,32 @@ export const RelationshipCard: React.FC<RelationshipCardProps> = ({ snapshot, on
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* 她自己寫的核心筆記（Letta 式，每天凌晨反思；寫錯的可以刪，她會記得那是錯的） */}
+      {core.length > 0 && (
+        <div className="space-y-1">
+          {(['master', 'self'] as const).map((about) => {
+            const list = core.filter((n) => n.about === about);
+            if (!list.length) return null;
+            return (
+              <div key={about}>
+                <p className="text-[10px] text-slate-400 mb-0.5">{about === 'master' ? '她對你的理解' : '她自己的相處心得'}</p>
+                {list.map((n) => (
+                  <div key={n.id} className="flex items-start gap-1 text-[10px] text-slate-200" title={`根據：${n.evidence.join('；')}`}>
+                    <span className="flex-1">
+                      {n.text}
+                      {n.tentative && <span className="text-slate-500">（還不確定）</span>}
+                    </span>
+                    <button onClick={() => removeCore(n.id)} className="text-slate-500 hover:text-rose-400 shrink-0" title="這條寫錯了，刪掉">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

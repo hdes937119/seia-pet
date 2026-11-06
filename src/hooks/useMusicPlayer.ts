@@ -195,6 +195,27 @@ export function useMusicPlayer({ duck }: { duck: boolean }) {
     [loadTrack, patch]
   );
 
+  /**
+   * 重建播放器（換了 YouTube 帳號時用）：舊的 iframe 還是舊帳號的狀態，要重開才會套用新的登入。
+   * 正在播的歌會從頭重放；暫停中的就先停下來。
+   */
+  const resetPlayer = useCallback(() => {
+    const { queue, index, status } = stateRef.current;
+    try {
+      playerRef.current?.destroy?.();
+    } catch {
+      // ignore
+    }
+    playerRef.current = null;
+    playerReady.current = null;
+    hostRef.current?.replaceChildren();
+    if ((status === 'playing' || status === 'loading') && queue[index]) {
+      void loadTrack(queue, index);
+    } else if (status === 'paused') {
+      patch({ status: 'idle', message: '已切換 YouTube 帳號，想聽再點一次' });
+    }
+  }, [loadTrack, patch]);
+
   const play = useCallback(
     async (query: string) => {
       const q = query.trim();
@@ -319,6 +340,7 @@ export function useMusicPlayer({ duck }: { duck: boolean }) {
     previous: () => advance(-1),
     setVolume,
     command,
+    resetPlayer,
   };
 }
 

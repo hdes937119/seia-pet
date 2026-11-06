@@ -17,12 +17,15 @@ export interface ChatDonePayload {
   latencyMs?: number;
   firstTokenMs?: number | null;
   error?: boolean;
+  attachments?: Array<{ type: 'image' | 'link'; url: string; link?: string; title?: string }>; // 她真的上網找到的東西
+  petStatus?: { tier: 'fresh' | 'tired' | 'exhausted'; raining: boolean }; // 聊完之後的體力與天氣
 }
 
 export async function streamChat(
   body: unknown,
   signal: AbortSignal,
-  onDelta: (text: string) => void
+  onDelta: (text: string) => void,
+  onEvent?: (event: string, data: any) => void // 其他事件（例如 act：微表情）
 ): Promise<ChatDonePayload> {
   const response = await fetch('/api/chat', {
     method: 'POST',
@@ -50,6 +53,7 @@ export async function streamChat(
     const data = JSON.parse(dataLines.join('\n'));
     if (event === 'delta' && data.text) onDelta(data.text);
     else if (event === 'done') done = data;
+    else onEvent?.(event, data);
   };
 
   while (true) {

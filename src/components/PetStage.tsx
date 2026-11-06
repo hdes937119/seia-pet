@@ -36,7 +36,42 @@ interface PetStageProps {
   isExploring?: boolean;
   onOpenDiscovery?: () => void;
   onDismissDiscovery?: () => void;
+  /** 她在忙（洗澡、出門…）：不顯示立繪，改顯示「不在」的小卡和倒數 */
+  away?: { emoji: string; label: string; endAt: number; awayNote: string } | null;
+  onCallBack?: () => void;
 }
+
+/** 「她不在」的小卡：倒數計時 */
+const AwayCard: React.FC<{ away: NonNullable<PetStageProps['away']>; onCallBack?: () => void }> = ({ away, onCallBack }) => {
+  const [now, setNow] = React.useState(Date.now());
+  React.useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+  const left = Math.max(0, Math.ceil((away.endAt - now) / 1000));
+  const mm = String(Math.floor(left / 60)).padStart(2, '0');
+  const ss = String(left % 60).padStart(2, '0');
+  return (
+    <div className="absolute inset-x-[8%] bottom-[12%] z-30 flex flex-col items-center gap-1.5 px-3 py-3 rounded-2xl bg-slate-950/80 border border-purple-400/40 shadow-xl text-slate-100 backdrop-blur-md">
+      <span className="text-4xl leading-none pet-anim-float">{away.emoji}</span>
+      <span className="text-xs font-semibold">西雅正在{away.label}</span>
+      <span className="font-mono text-lg text-purple-200 tabular-nums">{left > 0 ? `${mm}:${ss}` : '快回來了…'}</span>
+      <span className="text-[10px] text-slate-400 text-center leading-snug">{away.awayNote}</span>
+      {onCallBack && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCallBack();
+          }}
+          className="mt-0.5 px-2 py-0.5 rounded-lg text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300"
+        >
+          叫她回來
+        </button>
+      )}
+    </div>
+  );
+};
 
 export const PetStage: React.FC<PetStageProps> = ({
   visualMode,
@@ -55,6 +90,8 @@ export const PetStage: React.FC<PetStageProps> = ({
   isExploring = false,
   onOpenDiscovery,
   onDismissDiscovery,
+  away,
+  onCallBack,
 }) => {
   const isPatting = petState === 'patting';
   return (
@@ -119,7 +156,9 @@ export const PetStage: React.FC<PetStageProps> = ({
         className="absolute inset-0 cursor-pointer"
         title="左鍵：聊天 · 右鍵：選單 · 按住頭：摸頭"
       >
-        {visualMode === 'chibi' && (
+        {away && <AwayCard away={away} onCallBack={onCallBack} />}
+
+        {!away && visualMode === 'chibi' && (
           <ChibiPet
             state={petState}
             isTalking={isTalking}
@@ -129,7 +168,7 @@ export const PetStage: React.FC<PetStageProps> = ({
           />
         )}
 
-        {visualMode === 'custom' && customImgUrl && (
+        {!away && visualMode === 'custom' && customImgUrl && (
           <div className="absolute inset-0" style={{ containerType: 'inline-size' }}>
             <img
               src={customImgUrl}
@@ -144,19 +183,6 @@ export const PetStage: React.FC<PetStageProps> = ({
           </div>
         )}
 
-        {visualMode === 'mv_full' && (
-          <div
-            className={`absolute inset-x-0 bottom-0 aspect-video rounded-2xl overflow-hidden border-2 border-indigo-400/50 shadow-[0_0_30px_rgba(99,102,241,0.45)] pet-body ${
-              isPatting ? 'pet-anim-squish' : 'pet-anim-float'
-            }`}
-            style={{ containerType: 'inline-size' }}
-          >
-            <img src="/bili_cover.jpg" alt="雙子星貓 舞台" draggable={false} className="w-full h-full object-cover" />
-            {isTalking && <div className="absolute inset-0 ring-4 ring-inset ring-amber-300/75 animate-pulse" />}
-            {isPatting && <PetParticles specs={PET_STATES.patting.particles} stateKey="patting-mv" />}
-            <HeadPatZone onStart={onPatStart} onEnd={onPatEnd} className="left-[30%] top-[5%] w-[40%] h-[60%]" />
-          </div>
-        )}
       </div>
     </div>
   );

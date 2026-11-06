@@ -19,18 +19,20 @@ export interface ClientTime {
 }
 
 /** 時間感：給所有會說話的提示詞一行「現在幾點」，讓她知道早安 / 吃飯 / 該睡了 */
-export function describeTime(t?: ClientTime): string {
+export function describeTime(t?: ClientTime, opts: { skipMealHint?: boolean } = {}): string {
   if (!t?.label) return '';
   const h = typeof t.hour === 'number' ? t.hour : -1;
+  // 主人剛說過不餓 / 吃過了 → 不要再提示「午餐 / 晚餐時間」，免得她一直催吃飯
+  const meal = opts.skipMealHint ? '' : null;
   const hint =
     h >= 0 && h < 5
       ? '（已經是深夜了）'
       : h >= 5 && h < 10
         ? '（早上）'
         : h >= 11 && h < 14
-          ? '（午餐時間附近）'
+          ? meal ?? '（午餐時間附近）'
           : h >= 17 && h < 20
-            ? '（晚餐時間附近）'
+            ? meal ?? '（晚餐時間附近）'
             : h >= 23
               ? '（很晚了）'
               : '';
@@ -67,7 +69,7 @@ export function describePersonality(p: PersonalityConfig = {}): PersonaDescripti
     mid: '帶著善意的可愛損友吐槽口吻',
   }[sharp];
   const chattyDesc = {
-    high: '元氣活潑、語氣豐富、常帶日系萌系語助詞「喵～♪」「えへへ」「哈…」',
+    high: '元氣活潑、話多、語氣豐富，偶爾會冒出日系語助詞（不是每句都有）',
     low: '簡潔安靜、言簡意賅、平均1~2句話',
     mid: '節奏輕快自然的日常LINE好友對話（約2~3句話）',
   }[chatty];
@@ -77,7 +79,7 @@ export function describePersonality(p: PersonalityConfig = {}): PersonaDescripti
     mid: '輕鬆幽默與貼心陪伴兼具',
   }[humor];
   const tsunDesc = {
-    high: '重度日系傲嬌（「哼！本喵才不是特地關心你呢喵！」）',
+    high: '重度傲嬌：關心的時候常常嘴硬、不肯直說（用你自己的方式表現，不要套固定台詞）',
     low: '坦率直球表達喜愛，不嘴硬',
     mid: '微傲嬌、嘴硬心軟',
   }[tsun];
@@ -91,7 +93,7 @@ export function describePersonality(p: PersonalityConfig = {}): PersonaDescripti
     sharp === 'low' ? '語氣溫柔體貼、只說暖心的話，不要吐槽或損主人' : sharp === 'high' ? '可以毒舌犀利地吐槽' : '可以善意地調侃一下',
     tsun === 'high' ? '用傲嬌的方式表達（嘴硬說不是特地的）' : tsun === 'low' ? '坦率直接地表達關心與喜愛，不要嘴硬' : '可以稍微嘴硬但心軟',
     humor === 'high' ? '多玩梗' : humor === 'low' ? '認真說重點' : '',
-    chatty === 'high' ? '可以加「喵～♪」之類的語助詞' : '',
+    chatty === 'high' ? '語助詞偶爾用就好，不要每句都加' : '',
   ].filter(Boolean);
 
   const bubbleExample =

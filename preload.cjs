@@ -10,6 +10,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   // 透明區域滑鼠穿透：ignore=true 時點擊會穿過視窗到底下的程式
   setIgnoreMouse: (ignore) => ipcRenderer.send('set-ignore-mouse', Boolean(ignore)),
+  // YouTube 帳號（點唱機用主人的帳號播放）
+  getYouTubeLoginStatus: () => ipcRenderer.invoke('youtube-login-status'),
+  youtubeLogin: () => ipcRenderer.invoke('youtube-login'),
+  youtubeLogout: () => ipcRenderer.invoke('youtube-logout'),
+  onYouTubeLoginChanged: (callback) => {
+    const handler = (_event, loggedIn) => callback(Boolean(loggedIn));
+    ipcRenderer.on('youtube-login-changed', handler);
+    return () => ipcRenderer.removeListener('youtube-login-changed', handler);
+  },
+  // 西雅工坊的作品：開成可以調整大小的獨立視窗
+  openWorkshopWork: (id, entry, title) => ipcRenderer.invoke('open-workshop-work', id, entry, title),
   // 語音輸入全域熱鍵：回傳取消訂閱的函式
   getVoiceHotkey: () => ipcRenderer.invoke('get-voice-hotkey'),
   onVoiceHotkey: (callback) => {

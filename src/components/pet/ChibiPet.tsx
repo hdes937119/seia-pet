@@ -2,6 +2,7 @@ import React from 'react';
 import { BASE_SPRITE, PET_SPRITES, PET_STATES, type PetStateId, type SpriteAsset } from './petStates';
 import { PetAccessories, PetAura, PetParticles } from './PetEffects';
 import { HeadPatZone } from './HeadPatZone';
+import { LayeredSprite, layeredAccessories } from './LayeredSprite';
 
 /**
  * 雙子星貓 chibi 動態桌寵。
@@ -61,6 +62,8 @@ export const ChibiPet: React.FC<ChibiPetProps> = ({
 }) => {
   const config = PET_STATES[state] ?? PET_STATES.idle;
   const sprite = PET_SPRITES[state];
+  // 用分圖層立繪時，拿掉已經被真表情取代的舊配件（例如開心時的「^^」眼睛）
+  const accessories = sprite ? config.accessories : layeredAccessories(state, config.accessories);
 
   return (
     <div
@@ -70,22 +73,23 @@ export const ChibiPet: React.FC<ChibiPetProps> = ({
       {/* 光暈與背後配件（不跟身體動） */}
       <div key={`aura-${state}`} className="pet-enter absolute inset-0">
         <PetAura aura={config.aura} />
-        <PetAccessories ids={config.accessories} layer="back" />
+        <PetAccessories ids={accessories} layer="back" />
       </div>
 
       {/* 身體：狀態動畫 → 說話時的小幅彈動 → 立繪 + 貼身配件 */}
       <div key={`body-${state}`} className={`absolute inset-0 z-10 pet-body ${config.bodyAnim}`}>
         <div className={`absolute inset-0 pet-body ${isTalking ? 'pet-anim-talk' : ''}`}>
-          <SpriteImage asset={sprite} filter={config.filter} />
+          {/* 有逐格動畫素材的狀態用素材；其他用分圖層立繪（會眨眼、尾巴會搖） */}
+          {sprite ? <SpriteImage asset={sprite} filter={config.filter} /> : <LayeredSprite state={state} filter={config.filter} isTalking={isTalking} />}
           <div className="pet-enter absolute inset-0">
-            <PetAccessories ids={config.accessories} layer="attached" />
+            <PetAccessories ids={accessories} layer="attached" />
           </div>
         </div>
       </div>
 
       {/* 前景固定配件與粒子特效 */}
       <div key={`fx-${state}`} className="pet-enter absolute inset-0 z-20 pointer-events-none">
-        <PetAccessories ids={config.accessories} layer="static" />
+        <PetAccessories ids={accessories} layer="static" />
         <PetParticles specs={config.particles} stateKey={state} />
       </div>
 

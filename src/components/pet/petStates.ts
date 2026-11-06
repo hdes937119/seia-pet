@@ -13,7 +13,16 @@
  *   有素材的狀態會改用素材，配件與粒子特效照樣疊上去（不需要的可以把 accessories 清空）。
  */
 
-export type PetModeId = 'idle' | 'patting' | 'gaming' | 'gemini_web' | 'line';
+export type PetModeId =
+  | 'idle'
+  | 'patting'
+  | 'gaming'
+  | 'gemini_web'
+  | 'line'
+  | 'eating'
+  | 'tired' // 體力：累了（打哈欠）
+  | 'exhausted' // 體力：沒電了（抱枕頭快睡著）
+  | 'rainy'; // 外面真的在下雨（撐傘不爽）
 export type PetEmotionId =
   | 'happy'
   | 'hungry'
@@ -22,7 +31,11 @@ export type PetEmotionId =
   | 'proud'
   | 'confused'
   | 'loving';
-export type PetStateId = PetModeId | PetEmotionId;
+/** 微表情：她開口前的一瞬間反應（幾秒後自動結束），由回覆開頭的 <!--ACT:…--> 觸發 */
+export type PetActId = 'eyeroll' | 'sigh' | 'nervous' | 'shy' | 'smirk';
+export const PET_ACTS: PetActId[] = ['eyeroll', 'sigh', 'nervous', 'shy', 'smirk'];
+
+export type PetStateId = PetModeId | PetEmotionId | PetActId;
 
 export const PET_EMOTIONS: PetEmotionId[] = [
   'happy',
@@ -81,7 +94,7 @@ export interface SpriteAsset {
 
 export interface PetStateConfig {
   id: PetStateId;
-  kind: 'mode' | 'emotion';
+  kind: 'mode' | 'emotion' | 'act';
   label: string;
   emoji: string;
   bodyAnim: string; // index.css 裡的動畫 class
@@ -94,7 +107,7 @@ export interface PetStateConfig {
 /** 有逐格動畫素材時填在這裡（見檔案開頭說明） */
 export const PET_SPRITES: Partial<Record<PetStateId, SpriteAsset>> = {};
 
-export const BASE_SPRITE = '/pet/gemini-chibi.png';
+export const BASE_SPRITE = '/pet/layered/body.webp';
 
 export const PET_STATES: Record<PetStateId, PetStateConfig> = {
   idle: {
@@ -140,6 +153,16 @@ export const PET_STATES: Record<PetStateId, PetStateConfig> = {
     accessories: ['glasses', 'hologram', 'notebook'],
     particles: [{ kind: 'sparkle', count: 7, area: 'ears' }],
     aura: 'blue',
+  },
+  eating: {
+    id: 'eating',
+    kind: 'mode',
+    label: '吃飯中',
+    emoji: '🍚',
+    bodyAnim: 'pet-anim-float-slow',
+    accessories: [],
+    particles: [{ kind: 'heart', count: 2, area: 'around' }],
+    aura: 'gold',
   },
   line: {
     id: 'line',
@@ -227,6 +250,40 @@ export const PET_STATES: Record<PetStateId, PetStateConfig> = {
     particles: [{ kind: 'heart', count: 9, area: 'around' }],
     aura: 'pink',
   },
+  // ── 體力與天氣 ──
+  tired: {
+    id: 'tired',
+    kind: 'mode',
+    label: '累了',
+    emoji: '🥱',
+    bodyAnim: 'pet-anim-float-slow',
+    accessories: [],
+    particles: [],
+  },
+  exhausted: {
+    id: 'exhausted',
+    kind: 'mode',
+    label: '沒電了',
+    emoji: '😴',
+    bodyAnim: 'pet-anim-float-slow',
+    accessories: [],
+    particles: [],
+  },
+  rainy: {
+    id: 'rainy',
+    kind: 'mode',
+    label: '下雨天',
+    emoji: '🌧️',
+    bodyAnim: 'pet-anim-float',
+    accessories: [],
+    particles: [{ kind: 'rain', count: 6, area: 'above' }],
+  },
+  // ── 微表情（開口前的一瞬間）──
+  eyeroll: { id: 'eyeroll', kind: 'act', label: '無言', emoji: '🙄', bodyAnim: 'pet-anim-float', accessories: [], particles: [] },
+  sigh: { id: 'sigh', kind: 'act', label: '嘆氣', emoji: '😮‍💨', bodyAnim: 'pet-anim-shrink', accessories: [], particles: [] },
+  nervous: { id: 'nervous', kind: 'act', label: '心虛', emoji: '😅', bodyAnim: 'pet-anim-shy', accessories: [], particles: [] },
+  shy: { id: 'shy', kind: 'act', label: '害羞', emoji: '😳', bodyAnim: 'pet-anim-shy', accessories: [], particles: [] },
+  smirk: { id: 'smirk', kind: 'act', label: '偷笑', emoji: '🤭', bodyAnim: 'pet-anim-bounce', accessories: [], particles: [] },
 };
 
 export const ALL_PET_STATES = Object.values(PET_STATES);

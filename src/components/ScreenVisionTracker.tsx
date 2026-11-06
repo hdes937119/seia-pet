@@ -5,11 +5,6 @@ import {
   Square,
   RefreshCw,
   Eye,
-  Sparkles,
-  Gamepad2,
-  Tv,
-  MessageSquare,
-  Code2,
   ImagePlus,
   Zap,
   Clock,
@@ -21,6 +16,41 @@ import { getClientTime } from '../utils/clientTime';
 const GAME_COOLDOWN_KEY = 'gemini_twin_cat_game_cooldown';
 const isGamingActivity = (a: ScreenActivity | null) =>
   a?.category === 'gaming' || a?.appContext === 'gaming';
+
+/**
+ * 畫面變化偵測（借 dsh-see-now 的想法，程式自己寫）：
+ * 每秒把畫面縮成 64×36 打一個「變化分數」（0～255，靜止畫面 0、滑鼠移動不到 1、換一張圖幾十分）。
+ *  - 重大時刻：分數超過門檻，而且比「最近的平均」高很多 → 換地圖、Boss 出場、死掉…
+ *    聲光很強的遊戲平均本來就高，一直閃不會被當成重大時刻；觸發後 3 秒內不重複算。
+ *  - 慢慢變：小變化一直累加，超過一定量就存一格，慢慢走的畫面也不會漏。
+ * 打遊戲時：冷卻到了，有重大時刻才搭話；一直沒有的話，等到「保底時間」才看一次。
+ * 送圖：只拼有變化的那幾格（格數不固定），只有一個重大時刻時改送那一刻的完整大圖（場景模式）。
+ */
+const PACE_KEY = 'gemini_twin_cat_vision_pace';
+type VisionPace = 'calm' | 'normal' | 'dense';
+const PACE: Record<VisionPace, { cutAbs: number; spike: number; drift: number; fallbackMul: number; label: string }> = {
+  calm: { cutAbs: 20, spike: 3, drift: 90, fallbackMul: 3, label: '安靜' },
+  normal: { cutAbs: 12, spike: 2.5, drift: 60, fallbackMul: 2.5, label: '普通' },
+  dense: { cutAbs: 7, spike: 2, drift: 36, fallbackMul: 1.5, label: '密集' },
+};
+const SAMPLE_MS = 1000;
+const CUT_REFRACTORY_MS = 3000;
+const WARMUP_SAMPLES = 4;
+const MAX_KEPT = 9;
+const SKIP_RETRY_MS = 30_000;
+
+interface KeptFrame {
+  canvas: HTMLCanvasElement;
+  at: number;
+  cut: boolean;
+}
+
+interface VisualPack {
+  image: string;
+  kind: 'grid' | 'scene';
+  frames: number;
+  note: string;
+}
 
 interface ScreenVisionTrackerProps {
   personality: PersonalityConfig;
@@ -58,6 +88,24 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
     }
   });
   const [isGamingNow, setIsGamingNow] = useState(false);
+  const [pace, setPace] = useState<VisionPace>(() => {
+    try {
+      const v = localStorage.getItem(PACE_KEY);
+      return v === 'calm' || v === 'dense' ? v : 'normal';
+    } catch {
+      return 'normal';
+    }
+  });
+  const paceRef = useRef<VisionPace>(pace);
+  useEffect(() => {
+    paceRef.current = pace;
+    try {
+      localStorage.setItem(PACE_KEY, pace);
+    } catch {
+      // ignore
+    }
+  }, [pace]);
+  const [waitingHighlight, setWaitingHighlight] = useState(false);
   useEffect(() => {
     try {
       localStorage.setItem(GAME_COOLDOWN_KEY, String(gameCooldownSec));
@@ -82,7 +130,16 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
   const onActivityDetectedRef = useRef(onActivityDetected);
   const preferredModelRef = useRef<GeminiModelOption>(preferredModel);
   const visionAbortRef = useRef<AbortController | null>(null);
-  const sampleCounterRef = useRef(0);
+  // 變化偵測（見檔案開頭的說明）：上一次取樣的小圖、最近的平均分數、存下來的格子
+  const scoreCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const prevScorePixelsRef = useRef<Uint8ClampedArray | null>(null);
+  const baselineRef = useRef<number>(0);
+  const sampleCountRef = useRef<number>(0);
+  const driftAccRef = useRef<number>(0);
+  const lastCutAtRef = useRef<number>(0);
+  const keptRef = useRef<KeptFrame[]>([]);
+  const lastCutFullRef = useRef<{ at: number; data: string } | null>(null);
+  const retryAtRef = useRef<number>(0);
   // 用 ref 存串流，讓 onended 這類事件回呼永遠拿到最新的串流（避免抓到舊的 null）
   const streamRef = useRef<MediaStream | null>(null);
   const onToggleAutoTrackingRef = useRef(onToggleAutoTracking);
@@ -158,6 +215,114 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
     return canvas.toDataURL('image/jpeg', 0.75);
   }, []);
 
+  const resetChangeTracking = useCallback(() => {
+    prevScorePixelsRef.current = null;
+    baselineRef.current = 0;
+    sampleCountRef.current = 0;
+    driftAccRef.current = 0;
+    lastCutAtRef.current = 0;
+    keptRef.current = [];
+    lastCutFullRef.current = null;
+    retryAtRef.current = 0;
+  }, []);
+
+  /** 跟上一秒比，算畫面變化分數（0～255）；畫面還沒準備好回傳 null */
+  const scoreFrame = useCallback((): number | null => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth || !video.videoHeight) return null;
+    if (!scoreCanvasRef.current) scoreCanvasRef.current = document.createElement('canvas');
+    const c = scoreCanvasRef.current;
+    const w = 64;
+    const h = 36;
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, w, h);
+    const cur = ctx.getImageData(0, 0, w, h).data;
+    const prev = prevScorePixelsRef.current;
+    prevScorePixelsRef.current = new Uint8ClampedArray(cur);
+    if (!prev) return null;
+    let sum = 0;
+    for (let i = 0; i < cur.length; i += 4) {
+      const dr = Math.abs(cur[i] - prev[i]);
+      const dg = Math.abs(cur[i + 1] - prev[i + 1]);
+      const db = Math.abs(cur[i + 2] - prev[i + 2]);
+      const dy = Math.abs(0.299 * (cur[i] - prev[i]) + 0.587 * (cur[i + 1] - prev[i + 1]) + 0.114 * (cur[i + 2] - prev[i + 2]));
+      // 亮度變化佔一半、顏色變化佔一半
+      sum += 0.5 * dy + (dr + dg + db) / 6;
+    }
+    return sum / (w * h);
+  }, []);
+
+  /** 存一格（384 寬的小圖）；超過 9 格先丟最舊的「慢慢變」格子，重大時刻盡量留著 */
+  const keepFrame = useCallback((cut: boolean) => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth || !video.videoHeight) return;
+    const w = 384;
+    const h = Math.round((video.videoHeight * w) / video.videoWidth);
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, w, h);
+    const list = [...keptRef.current, { canvas: c, at: Date.now(), cut }];
+    while (list.length > MAX_KEPT) {
+      const i = list.findIndex((f) => !f.cut);
+      list.splice(i >= 0 ? i : 0, 1);
+    }
+    keptRef.current = list;
+  }, []);
+
+  /** 把上次分析之後存下來的格子打包：3 格以上拼圖（格數不固定）；只有一個重大時刻就送那一刻的大圖 */
+  const buildVisual = useCallback((): VisualPack | null => {
+    const now = Date.now();
+    const kept = keptRef.current;
+    if (kept.length >= 3) {
+      const n = kept.length;
+      const cols = n <= 4 ? 2 : 3;
+      const rows = Math.ceil(n / cols);
+      const cw = kept[0].canvas.width;
+      const ch = kept[0].canvas.height;
+      const canvas = document.createElement('canvas');
+      canvas.width = cw * cols;
+      canvas.height = ch * rows;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      const notes: string[] = [];
+      kept.forEach((f, i) => {
+        const x = (i % cols) * cw;
+        const y = Math.floor(i / cols) * ch;
+        ctx.drawImage(f.canvas, x, y, cw, ch);
+        const ago = Math.max(0, Math.round((now - f.at) / 1000));
+        const label = `${i + 1}${f.cut ? '★' : ''} ${ago}秒前`;
+        ctx.font = 'bold 16px sans-serif';
+        const tw = ctx.measureText(label).width;
+        ctx.fillStyle = f.cut ? 'rgba(180,30,60,0.8)' : 'rgba(0,0,0,0.6)';
+        ctx.fillRect(x + 4, y + 4, tw + 12, 22);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(label, x + 10, y + 21);
+        notes.push(`${i + 1}${f.cut ? '★' : ''}＝${ago}秒前`);
+      });
+      return { image: canvas.toDataURL('image/jpeg', 0.7), kind: 'grid', frames: n, note: notes.join('、') };
+    }
+    const full = lastCutFullRef.current;
+    if (full) {
+      const ago = Math.max(0, Math.round((now - full.at) / 1000));
+      return { image: full.data, kind: 'scene', frames: 1, note: `${ago}秒前` };
+    }
+    return null;
+  }, []);
+
+  /** 分析成功後，把已經送出去的格子清掉（分析途中新存的留著） */
+  const clearSentFrames = useCallback((sentAt: number) => {
+    keptRef.current = keptRef.current.filter((f) => f.at > sentAt);
+    if (lastCutFullRef.current && lastCutFullRef.current.at <= sentAt) lastCutFullRef.current = null;
+  }, []);
+
   const computeFrameDiff = useCallback((updateReference: boolean = false): number => {
     if (!videoRef.current || !diffCanvasRef.current) return 0;
     const video = videoRef.current;
@@ -203,7 +368,14 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
 
   // Send screenshot to backend Gemini Vision API
   const analyzeScreenshot = useCallback(
-    async (base64Img: string, scenarioHint?: string) => {
+    async (
+      base64Img: string,
+      opts: { scenarioHint?: string; visual?: VisualPack | null; manual?: boolean } = {}
+    ) => {
+      const { scenarioHint, visual, manual = false } = opts;
+      const sentAt = Date.now();
+      const prevAnalyzeTime = lastAnalyzeTimeRef.current;
+      const wasFirst = !hasDoneFirstTriggerRef.current;
       if (visionAbortRef.current) {
         visionAbortRef.current.abort();
       }
@@ -229,6 +401,11 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
             recentActivity: lastActivityRef.current?.title,
             recentObservation: lastActivityRef.current?.observation,
             scenarioHint,
+            mosaic: visual?.image || undefined,
+            mosaicKind: visual?.kind,
+            mosaicFrames: visual?.frames,
+            mosaicNote: visual?.note,
+            manual,
             preferredModel: preferredModelRef.current,
             clientTime: getClientTime(),
           }),
@@ -239,6 +416,15 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
         if (!res.ok || !data || data.error) {
           throw new Error(data?.error || `HTTP ${res.status}`);
         }
+        // 後端說先不說（她在忙、主人剛講完話…）：沒花 Gemini 額度，30 秒後再試，存下來的格子留著
+        if (data.skipped) {
+          lastAnalyzeTimeRef.current = prevAnalyzeTime;
+          if (wasFirst) hasDoneFirstTriggerRef.current = false;
+          retryAtRef.current = Date.now() + SKIP_RETRY_MS;
+          setStatusNotice(`她先不搭話：${data.reason || '時機不對'}`);
+          return;
+        }
+        clearSentFrames(sentAt);
 
         const elapsed = data.latencyMs || Date.now() - t0;
         setLastLatencyMs(elapsed);
@@ -280,29 +466,65 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
         }
       }
     },
-    [computeFrameDiff]
+    [computeFrameDiff, clearSentFrames]
   );
 
-  // Cooldown timer & Auto-trigger rule:
-  // 1. Triggers immediately on the first switch/start (hasDoneFirstTriggerRef === false)
-  // 2. Afterwards, strictly enforces at least `cooldownSec` (default 300s = 5 minutes) before the next automatic trigger!
+  // 自動觸發規則：
+  // 1. 開始共享後，畫面一就緒就先看一次
+  // 2. 之後每秒打變化分數、存格子；冷卻時間（一般 5 分鐘／遊戲 2 分鐘）是最快的頻率，不會更勤
+  //    - 一般畫面：冷卻到了、而且跟上次看的時候差 10% 以上才看
+  //    - 打遊戲：冷卻到了、這段時間有重大時刻才看；一直沒有就等到保底時間（冷卻 × 節奏倍數）
   useEffect(() => {
     if (!stream || !isAutoTracking) {
       setRemainingCooldownSec(0);
+      setWaitingHighlight(false);
       return;
     }
 
     const monitorTimer = setInterval(() => {
-      if (isAnalyzingRef.current) return;
+      const now = Date.now();
+      const p = PACE[paceRef.current];
 
-      // 正在打遊戲 → 用遊戲夥伴的間隔（比較勤），其他畫面維持一般間隔
-      const effectiveCooldown = isGamingActivity(lastActivityRef.current) ? gameCooldownSec : cooldownSec;
-      const elapsedSec = Math.floor((Date.now() - lastAnalyzeTimeRef.current) / 1000);
+      // 每秒打分數（分析中也照打，才不會漏掉畫面）
+      const score = scoreFrame();
+      if (score !== null) {
+        sampleCountRef.current++;
+        const base = baselineRef.current;
+        const warmedUp = sampleCountRef.current > WARMUP_SAMPLES;
+        const isCut =
+          warmedUp &&
+          score >= p.cutAbs &&
+          score >= base * p.spike + 2 &&
+          now - lastCutAtRef.current >= CUT_REFRACTORY_MS;
+        // 最近的平均（突然的大跳動只算一部分，免得一次換場就把平均拉太高）
+        baselineRef.current = sampleCountRef.current === 1 ? score : base * 0.9 + Math.min(score, base * 3 + 10) * 0.1;
+        if (isCut) {
+          lastCutAtRef.current = now;
+          driftAccRef.current = 0;
+          keepFrame(true);
+          const full = captureFrame();
+          if (full) lastCutFullRef.current = { at: now, data: full };
+        } else {
+          driftAccRef.current += score;
+          if (driftAccRef.current >= p.drift) {
+            driftAccRef.current = 0;
+            keepFrame(false);
+          }
+        }
+      }
+
+      if (isAnalyzingRef.current) return;
+      if (now < retryAtRef.current) return;
+
+      const gaming = isGamingActivity(lastActivityRef.current);
+      const effectiveCooldown = gaming ? gameCooldownSec : cooldownSec;
+      const elapsedSec = Math.floor((now - lastAnalyzeTimeRef.current) / 1000);
       const remaining = Math.max(0, effectiveCooldown - elapsedSec);
       setRemainingCooldownSec(remaining);
 
       // First time after sharing starts: trigger immediately once video frames are ready
       if (!hasDoneFirstTriggerRef.current) {
+        setWaitingHighlight(false);
         const frame = captureFrame();
         if (frame) {
           analyzeScreenshot(frame);
@@ -310,20 +532,36 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
         return;
       }
 
-      // 之後：冷卻時間到了、而且畫面有變化才觸發
-      if (elapsedSec >= effectiveCooldown) {
-        const diff = computeFrameDiff(false);
-        if (diff >= 10) {
-          const frame = captureFrame();
-          if (frame) {
-            analyzeScreenshot(frame);
-          }
-        }
+      if (elapsedSec < effectiveCooldown) {
+        setWaitingHighlight(false);
+        return;
       }
-    }, 2000);
+
+      if (gaming) {
+        const hasHighlight = keptRef.current.some((f) => f.cut);
+        const fallbackSec = Math.round(effectiveCooldown * p.fallbackMul);
+        const due = elapsedSec >= fallbackSec && keptRef.current.length > 0;
+        if (!hasHighlight && !due) {
+          setWaitingHighlight(true);
+          setRemainingCooldownSec(Math.max(0, fallbackSec - elapsedSec));
+          return;
+        }
+        setWaitingHighlight(false);
+        const frame = captureFrame();
+        if (frame) analyzeScreenshot(frame, { visual: buildVisual() });
+        return;
+      }
+
+      setWaitingHighlight(false);
+      const diff = computeFrameDiff(false);
+      if (diff >= 10) {
+        const frame = captureFrame();
+        if (frame) analyzeScreenshot(frame);
+      }
+    }, SAMPLE_MS);
 
     return () => clearInterval(monitorTimer);
-  }, [stream, isAutoTracking, cooldownSec, gameCooldownSec, computeFrameDiff, captureFrame, analyzeScreenshot]);
+  }, [stream, isAutoTracking, cooldownSec, gameCooldownSec, computeFrameDiff, captureFrame, analyzeScreenshot, scoreFrame, keepFrame, buildVisual]);
 
   // Listen for global Ctrl+V image paste
   useEffect(() => {
@@ -337,7 +575,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
             const reader = new FileReader();
             reader.onload = () => {
               if (typeof reader.result === 'string') {
-                analyzeScreenshot(reader.result);
+                analyzeScreenshot(reader.result, { manual: true });
               }
             };
             reader.readAsDataURL(blob);
@@ -356,7 +594,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
     }
     const frame = captureFrame();
     if (frame) {
-      analyzeScreenshot(frame);
+      analyzeScreenshot(frame, { manual: true });
     }
   };
 
@@ -386,6 +624,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
 
       hasDoneFirstTriggerRef.current = false;
       lastThumbPixelsRef.current = null;
+      resetChangeTracking();
       streamRef.current = mediaStream;
       setStream(mediaStream);
 
@@ -423,6 +662,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
     }
     hasDoneFirstTriggerRef.current = false;
     lastThumbPixelsRef.current = null;
+    resetChangeTracking();
     setRemainingCooldownSec(0);
     onToggleAutoTrackingRef.current(false);
   };
@@ -444,125 +684,10 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === 'string') {
-        analyzeScreenshot(reader.result);
+        analyzeScreenshot(reader.result, { manual: true });
       }
     };
     reader.readAsDataURL(file);
-  };
-
-  const simulateScenario = (type: 'gaming' | 'video' | 'chatting' | 'coding') => {
-    sampleCounterRef.current += 1;
-    const idx = sampleCounterRef.current % 3;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = 560;
-    canvas.height = 315;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const videoSamples = [
-      {
-        bg: '#1e1b4b',
-        title: '📺 Bilibili: 【孤獨搖滾】小孤獨在武道館神級吉他獨奏！',
-        sub: '字幕：「後藤一里這段滑音太燃了！全場沸騰！」 · 觀看人數 12.5萬',
-      },
-      {
-        bg: '#31102f',
-        title: '📺 YouTube: 【美食探店】日本東京深夜排隊博多濃郁豚骨拉麵',
-        sub: '字幕：「這塊炙燒叉燒入口即化，半熟溏心蛋太犯規了！」',
-      },
-      {
-        bg: '#0c2d48',
-        title: '📺 Netflix 動畫: 《葬送的芙莉蓮》芙莉蓮掉進寶箱怪被咬頭',
-        sub: '字幕：「好黑喔！快拉我出來～這裡面有99%是魔導書！」',
-      },
-    ];
-
-    const gamingSamples = [
-      {
-        bg: '#0f172a',
-        title: '🎮 Steam: 《黑神話：悟空》二郎神楊戩最終決戰',
-        sub: '畫面：玩家僅剩 8% 血量，葫蘆已喝光，二郎神正在開天眼放萬劍歸宗！',
-      },
-      {
-        bg: '#1f122b',
-        title: '🎮 《艾爾登法環》女武神瑪蓮妮亞：水鳥亂舞發動！',
-        sub: '畫面：螢幕中央大字「YOU DIED (落命)」· 已經連續挑戰第 38 次',
-      },
-      {
-        bg: '#082f49',
-        title: '🎮 《英雄聯盟 LoL》大龍團戰五殺 Penta Kill 瞬間',
-        sub: '畫面：隊友瘋狂打問號 Ping 燈 · 敵方水晶主堡即將爆炸！',
-      },
-    ];
-
-    const chatSamples = [
-      {
-        bg: '#064e3b',
-        title: '💬 LINE 聊天視窗：老闆半夜傳訊「明天早上順便交簡報」',
-        sub: '對方訊息：「這份企劃小改一下很快吧？」 · 輸入框：「收到...」',
-      },
-      {
-        bg: '#134e4a',
-        title: '💬 LINE 死黨群組：週末要去吃麻辣火鍋還是燒肉？',
-        sub: '阿明：「我投和牛燒肉一票！」 · 未讀訊息 18 則',
-      },
-      {
-        bg: '#1e293b',
-        title: '💬 Discord 遊戲語音群：今晚八點五排缺一！快上線！',
-        sub: '頻道狀態：4 人已在語音房等待主人加入',
-      },
-    ];
-
-    const codingSamples = [
-      {
-        bg: '#18181b',
-        title: '💻 VS Code: 正在調試 Gemini AI 雙子星貓視覺神經網路',
-        sub: 'Terminal: TypeError: Cannot read properties of undefined (reading "nya")',
-      },
-      {
-        bg: '#090d16',
-        title: '💻 GitHub Pull Request: 準備合併 1,240 行重構程式碼',
-        sub: '狀態：All checks have passed · 等待部署上線',
-      },
-      {
-        bg: '#1e1e2e',
-        title: '💻 LeetCode Hard 演算法題：動態規劃解不出來卡關中',
-        sub: '執行結果：Time Limit Exceeded (TLE) · 已思考 45 分鐘',
-      },
-    ];
-
-    const pool =
-      type === 'video'
-        ? videoSamples
-        : type === 'gaming'
-          ? gamingSamples
-          : type === 'chatting'
-            ? chatSamples
-            : codingSamples;
-
-    const sample = pool[idx];
-
-    ctx.fillStyle = sample.bg;
-    ctx.fillRect(0, 0, 560, 315);
-    ctx.strokeStyle = '#6366f1';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(10, 10, 540, 295);
-
-    ctx.fillStyle = '#facc15';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillText(sample.title, 26, 95);
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '16px sans-serif';
-    ctx.fillText(sample.sub, 26, 155);
-
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '13px monospace';
-    ctx.fillText(`Frame Timestamp: ${new Date().toLocaleTimeString()}`, 26, 250);
-
-    const mockImg = canvas.toDataURL('image/jpeg', 0.8);
-    analyzeScreenshot(mockImg, `${sample.title} - ${sample.sub}`);
   };
 
   const formatCooldown = (sec: number) => {
@@ -662,7 +787,9 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
           <div className="flex items-center gap-2">
             <span className="font-mono text-amber-300 flex items-center gap-1">
               <Clock className="w-3 h-3" />
-              {remainingCooldownSec > 0
+              {waitingHighlight
+                ? `🎮 等精彩時刻（最久再 ${formatCooldown(remainingCooldownSec)}）`
+                : remainingCooldownSec > 0
                 ? `下次自動觸發冷卻: ${formatCooldown(remainingCooldownSec)}`
                 : '已就緒（偵測到換片即自動觸發）'}
             </span>
@@ -687,6 +814,18 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
               <option value={60}>🎮 遊戲：每 1 分鐘</option>
               <option value={120}>🎮 遊戲：每 2 分鐘</option>
               <option value={300}>🎮 遊戲：每 5 分鐘</option>
+            </select>
+            <select
+              value={pace}
+              onChange={(e) => setPace(e.target.value as VisionPace)}
+              className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-[10px] text-slate-200"
+              title="打遊戲時，畫面要變多大才算「精彩時刻」：安靜＝只有大事才講、密集＝小事也講。沒有精彩時刻時，最久等冷卻時間的 3／2.5／1.5 倍才看一次"
+            >
+              {(Object.keys(PACE) as VisionPace[]).map((k) => (
+                <option key={k} value={k}>
+                  節奏：{PACE[k].label}
+                </option>
+              ))}
             </select>
           </div>
         </div>
@@ -740,56 +879,12 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
           <div className="flex items-center gap-2">
             <Eye className="w-4 h-4 text-purple-400 shrink-0" />
             <span>
-              點擊「授權螢幕共享」：第一次切換時會立即主動吐槽，之後最短每 5 分鐘才自動觸發一次，不頻繁打擾！
+              按「授權螢幕共享」開始；換畫面時她會看一眼，不會一直打擾。
             </span>
           </div>
         </div>
       )}
 
-      {/* Dynamic Multi-Video / Multi-Game Test Buttons */}
-      <div className="pt-2 border-t border-slate-800/70">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-slate-400 flex items-center gap-1">
-            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-            手動切換場景測試（點擊立即觸發一次 Gemini 視覺分析）：
-          </span>
-          {isAnalyzing && (
-            <span className="text-[11px] text-pink-300 font-semibold animate-pulse">
-              ⚡ Gemini 正在分析畫面（隨時可在右側輸入打斷）...
-            </span>
-          )}
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <button
-            onClick={() => simulateScenario('video')}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-slate-800/80 hover:bg-slate-700 text-amber-200 transition-colors border border-amber-500/30"
-          >
-            <Tv className="w-3.5 h-3.5 text-amber-400" />
-            <span>切換不同影片</span>
-          </button>
-          <button
-            onClick={() => simulateScenario('gaming')}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-slate-800/80 hover:bg-slate-700 text-rose-200 transition-colors border border-rose-500/30"
-          >
-            <Gamepad2 className="w-3.5 h-3.5 text-rose-400" />
-            <span>切換不同遊戲</span>
-          </button>
-          <button
-            onClick={() => simulateScenario('chatting')}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-slate-800/80 hover:bg-slate-700 text-emerald-200 transition-colors border border-emerald-500/30"
-          >
-            <MessageSquare className="w-3.5 h-3.5 text-emerald-400" />
-            <span>切換不同 LINE</span>
-          </button>
-          <button
-            onClick={() => simulateScenario('coding')}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-slate-800/80 hover:bg-slate-700 text-sky-200 transition-colors border border-sky-500/30"
-          >
-            <Code2 className="w-3.5 h-3.5 text-sky-400" />
-            <span>切換不同工作</span>
-          </button>
-        </div>
-      </div>
     </div>
   );
 };

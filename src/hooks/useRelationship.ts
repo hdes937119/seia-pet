@@ -12,6 +12,8 @@ export interface RelationshipSnapshot {
   streakDays: number;
   nickname: string;
   insideJokes: Array<{ id: string; text: string; createdAt: number }>;
+  refusedNicknames?: string[];
+  nicknameOff?: boolean;
   levels?: Array<{ min: number; name: string }>;
 }
 
@@ -45,7 +47,7 @@ export function useRelationship() {
     }
   }, []);
 
-  const update = useCallback(async (patch: { nickname?: string }) => {
+  const update = useCallback(async (patch: { nickname?: string; nicknameOff?: boolean; unrefuse?: string }) => {
     const res = await fetch('/api/relationship', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },

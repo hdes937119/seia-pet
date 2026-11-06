@@ -12,3 +12,23 @@ TTS/
 
 # 桌寵執行時產生的資料（例如自訂立繪 data/custom-avatar.png）
 data/
+
+# 每台電腦自己的設定與密碼（LINE 通道）
+ngrok-authtoken.txt
+ngrok-domain.txt
+ngrok.exe
+sovits-dir.txt
+logs/
+
+# 同步（每台電腦自己的設定）
+sync-dir.txt
+sync-state.json
+
+# 聲音素材與個人檔案（私人 repo 也不上傳）
+voice-files/
+seia projects/
+.aistudio/
+server - 備份.ts
+/*.png
+/*.jfif
+/*.jpg

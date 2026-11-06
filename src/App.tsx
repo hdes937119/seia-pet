@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { BookOpen, Film, Volume2, VolumeX, Settings2, Monitor, MessageCircle, Mic, Music2 } from 'lucide-react';
+import { BookOpen, Film, Settings2, Monitor, MessageCircle, Mic, Music2 } from 'lucide-react';
 import {
   PersonalityConfig,
   MemoryKeyword,
@@ -20,13 +20,19 @@ import { usePetState } from './hooks/usePetState';
 import { memoryDecayService } from './services/memoryDecayService';
 import { PetStage } from './components/PetStage';
 import { RadialMenu, type RadialMenuItem } from './components/RadialMenu';
+import { type PreparedMedia } from './utils/chatMedia';
 import { SettingsPanel, type ExploreStatus, type SettingsTab } from './components/SettingsPanel';
 import { useIdleExplorer } from './hooks/useIdleExplorer';
+import { markPetInteraction } from './utils/petInteraction';
+import { useAutoHide } from './hooks/useAutoHide';
+import { useHourlyChime } from './hooks/useHourlyChime';
+import { Ahoge } from './components/pet/Ahoge';
+import { SignClock } from './components/pet/SignClock';
 import { useServerEvents } from './hooks/useServerEvents';
 import { pickPatReaction } from './utils/patReactions';
 import { getClientTime } from './utils/clientTime';
 import { useCompanionGreeting, type GreetingReason } from './hooks/useCompanionGreeting';
-import { useDiaryCompiler } from './hooks/useDiaryCompiler';
+import { useDiaryCompiler, messageTime } from './hooks/useDiaryCompiler';
 import { useRelationship } from './hooks/useRelationship';
 import { RelationshipCard } from './components/RelationshipCard';
 import { useAvatarAppearance } from './hooks/useAvatarAppearance';
@@ -40,6 +46,52 @@ import { IdleVideoBacklogModal } from './components/IdleVideoBacklogModal';
 import { ChatInterface } from './components/ChatInterface';
 import { WindowDragCorners } from './components/WindowDragCorners';
 
+const AUTO_HIDE_KEY = 'gemini_twin_cat_auto_hide';
+
+/** LINE 對話紀錄的一筆（後端 /api/line/history） */
+interface LineHistoryItem {
+  role: 'user' | 'pet';
+  content: string;
+  at: number;
+}
+
+/** LINE 對話 → 對話框的訊息（她的回覆照 [[NEXT]] / 貼圖拆成好幾則，跟桌面上一樣） */
+function lineToChatMessages(items: LineHistoryItem[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (const it of items) {
+    const d = new Date(it.at);
+    const sameDay = d.toDateString() === new Date().toDateString();
+    const time = d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+    const timestamp = sameDay ? time : `${d.getMonth() + 1}/${d.getDate()} ${time}`;
+    const segs: Segment[] = it.role === 'pet' ? splitSegments(it.content, true).complete : [{ content: it.content }];
+    segs.forEach((seg, i) => {
+      out.push({
+        id: `line_${it.at}_${i}`, // 結尾是時間戳，跟桌面訊息一起依時間排序
+        role: it.role,
+        content: seg.content,
+        sticker: seg.sticker,
+        timestamp,
+        isRead: true,
+        source: 'line',
+      });
+    });
+  }
+  return out;
+}
+
+/** 桌面訊息 + LINE 訊息依時間排好（沒有時間的桌面訊息跟著前一則） */
+function mergeByTime(desktop: ChatMessage[], line: ChatMessage[]): ChatMessage[] {
+  if (line.length === 0) return desktop;
+  let last = 0;
+  const tagged = [
+    ...desktop.map((m, i) => {
+      last = messageTime(m) ?? last;
+      return { m, t: last, k: 0, i };
+    }),
+    ...line.map((m, i) => ({ m, t: messageTime(m) ?? 0, k: 1, i })),
+  ];
+  return tagged.sort((a, b) => a.t - b.t || a.k - b.k || a.i - b.i).map((x) => x.m);
+}
 const STORAGE_KEY_PERSONALITY = 'gemini_twin_cat_personality';
 const STORAGE_KEY_MESSAGES = 'gemini_twin_cat_messages';
 const STORAGE_KEY_VIDEOS = 'gemini_twin_cat_videos';
@@ -122,7 +174,8 @@ export default function App() {
   });
 
   const [currentActivity, setCurrentActivity] = useState<ScreenActivity | null>(null);
-  const [chatStyle, setChatStyle] = useState<ChatStyle>('line');
+  // 聊天框外觀：目前固定 LINE 風格（ChatInterface 裡依 chatStyle 分支上色，以後要換色調就在這裡加新的樣式）
+  const chatStyle: ChatStyle = 'line';
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [isTalking, setIsTalking] = useState(false);
   const [speechBubbleText, setSpeechBubbleText] = useState<string>('');
@@ -163,6 +216,8 @@ export default function App() {
       petInterests: '',
       greetOnReturn: true,
       lateNightReminder: true,
+      hourlyChime: true,
+      stamina: 'normal',
       sources: { youtube: true, wiki: true, news: true, reddit: true, hn: true, ptt: true, bahamut: true },
       pttBoards: 'C_Chat, Steam, PlayStation, PC_Shopping, movie, joke',
       bahamutBoards: '流亡黯道 18966、原神 36730、英雄聯盟 17532、魔物獵人 5786、Nintendo Switch 31587、電腦應用綜合討論 60030',
@@ -194,6 +249,23 @@ export default function App() {
 
   const bubbleTimeoutRef = useRef<any>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
+  const pendingMediaRef = useRef<PreparedMedia[]>([]);
+  // 她在忙（洗澡、出門買宵夜…）：後端決定，這裡只負責顯示倒數
+  const [busyInfo, setBusyInfo] = useState<{ emoji: string; label: string; endAt: number; awayNote: string } | null>(null);
+  const applyBusy = useCallback((data: any) => {
+    const c = data?.busy ? data.current : null;
+    setBusyInfo(c ? { emoji: c.emoji, label: c.label, endAt: c.endAt, awayNote: c.awayNote } : null);
+  }, []);
+  useEffect(() => {
+    const load = () =>
+      fetch('/api/busy')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => d && applyBusy(d))
+        .catch(() => {});
+    load();
+    const t = window.setInterval(load, 30_000);
+    return () => window.clearInterval(t);
+  }, [applyBusy]);
   const isWaitingRef = useRef(false);
 
   // 桌寵動態：視窗偵測決定運作模式（遊戲 / Gemini 網頁 / LINE），15 分鐘沒更新就回到待機
@@ -205,7 +277,47 @@ export default function App() {
     screenModeFresh && appContext && appContext !== 'other' ? appContext : null;
   // 長時間心情與好感度（影響語氣、閒置動作，設定面板「主動」分頁可以看）
   const relation = useRelationship();
-  const pet = usePetState(screenMode, relation.snapshot?.mood ?? 0);
+  // 主人說「在吃飯」（桌面或 LINE 都算）→ 她也換成捧碗陪你吃，說「吃飽了」或 45 分鐘後換回來
+  const [eatingUntil, setEatingUntil] = useState(0);
+  useEffect(() => {
+    if (!eatingUntil) return;
+    const left = eatingUntil - Date.now();
+    if (left <= 0) {
+      setEatingUntil(0);
+      return;
+    }
+    const t = window.setTimeout(() => setEatingUntil(0), left);
+    return () => window.clearTimeout(t);
+  }, [eatingUntil]);
+  // 體力與天氣：累了打哈欠、沒電抱枕頭、外面在下雨就撐傘不爽（後端判斷，每 3 分鐘問一次，聊完也會更新）
+  // asleep：河木鎮的早上賴床（還沒被主人叫醒）
+  const [petStatus, setPetStatus] = useState<{ tier: 'fresh' | 'tired' | 'exhausted'; raining: boolean; asleep?: boolean }>({
+    tier: 'fresh',
+    raining: false,
+  });
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch('/api/pet-status')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (alive && d?.tier) setPetStatus({ tier: d.tier, raining: Boolean(d.raining), asleep: Boolean(d.asleep) });
+        })
+        .catch(() => {});
+    load();
+    const t = window.setInterval(load, 3 * 60 * 1000);
+    return () => {
+      alive = false;
+      window.clearInterval(t);
+    };
+  }, []);
+  // 優先順序：吃飯 > 賴床 / 沒電（連打遊戲都撐不住）> 螢幕偵測的情境 > 累了 > 下雨天 > 待機
+  const baseMode = eatingUntil
+    ? 'eating'
+    : petStatus.asleep || petStatus.tier === 'exhausted'
+      ? 'exhausted'
+      : screenMode ?? (petStatus.tier === 'tired' ? 'tired' : petStatus.raining ? 'rainy' : null);
+  const pet = usePetState(baseMode, relation.snapshot?.mood ?? 0);
 
   // Subscribe to memory decay service
   useEffect(() => {
@@ -238,6 +350,19 @@ export default function App() {
       console.warn(e);
     }
   }, [personality]);
+
+  // 最近 20 則 LINE 對話（只顯示在對話框，不存進桌寵的聊天紀錄；後端有新訊息會即時推過來）
+  const [lineHistory, setLineHistory] = useState<LineHistoryItem[]>([]);
+  useEffect(() => {
+    fetch('/api/line/history')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (Array.isArray(data?.items)) setLineHistory(data.items);
+      })
+      .catch(() => undefined);
+  }, []);
+  const lineMessages = useMemo(() => lineToChatMessages(lineHistory), [lineHistory]);
+  const chatDisplay = useMemo(() => mergeByTime(messages, lineMessages), [messages, lineMessages]);
 
   // Persist messages
   useEffect(() => {
@@ -297,8 +422,22 @@ export default function App() {
   }, []);
 
   // 2. Chat Handler — Always prioritizes user input & interrupts any previous thinking
-  const handleSendMessage = async (text: string) => {
-    if (!text.trim()) return;
+  /**
+   * 連續輸入防抖（借 astrbot private_companion）：主人一句話拆成兩三則快速連傳時，
+   * 先等一下再一起回，不會被她搶答、回兩次。看起來像她在等你打完。
+   * 句子看起來講完了（句號、問號、夠長）只等 0.9 秒；短短的、像還沒講完的等 2 秒。語音輸入不用等。
+   */
+  const debounceMs = (text: string) => {
+    const t = text.trim();
+    if (/[。！？!?…~～]$|喵$/.test(t) || t.length >= 20) return 900;
+    return 2000;
+  };
+
+  const handleSendMessage = async (text: string, opts: { immediate?: boolean; media?: PreparedMedia } = {}) => {
+    markPetInteraction(); // 跟她聊天也算有理她（語音熱鍵送出時不會有點擊）
+    if (!text.trim() && !opts.media) return;
+    // 主人傳的圖片 / 影片：等到這次真的送出去才清掉（連傳時前一次被取消，附件會跟著下一次一起送）
+    if (opts.media) pendingMediaRef.current = [...pendingMediaRef.current, opts.media].slice(-4);
 
     // If currently thinking or analyzing screen, interrupt immediately to prioritize user's new input
     if (chatAbortRef.current) {
@@ -314,15 +453,26 @@ export default function App() {
     const userMsg: ChatMessage = {
       id: 'msg_' + Date.now(),
       role: 'user',
-      content: text,
+      content: text.trim() || (opts.media?.kind === 'video' ? '（傳了一段影片）' : '（傳了一張圖片）'),
+      ...(opts.media
+        ? { media: { kind: opts.media.kind, thumb: opts.media.thumb, name: opts.media.name, durationSec: opts.media.durationSec } }
+        : {}),
       timestamp: new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
     };
 
     const nextMessages = [...messages, userMsg];
+    // 給她的上下文：桌面 + LINE 的對話依時間排好（她記得你剛剛在 LINE 上說了什麼）
+    const contextMessages = mergeByTime(nextMessages, lineMessages);
     setMessages(nextMessages);
     isWaitingRef.current = true;
     pet.markActive();
     setIsStreamingOrWaiting(true);
+
+    // 等一下看主人是不是還要接著打（又送出新的一則 → 這次取消，由新的那次一起回）
+    if (!opts.immediate) {
+      await new Promise((r) => setTimeout(r, debounceMs(text)));
+      if (controller.signal.aborted) return;
+    }
 
     // 說話節奏：回覆可能被模型用 [[NEXT]] 切成好幾則（或含貼圖）。
     // 第 1 則照常逐字串流；第 2 則開始，先「輸入中…」一下再整則送出，像真人連傳訊息。
@@ -371,6 +521,9 @@ export default function App() {
       firstSegDone = true;
       upsertSeg(0, seg, false);
       if (firstSegText) {
+        // 最後一包文字常常跟 [[NEXT]] / 貼圖一起到，還沒交給語音過 → 先補上，不然句尾會被吞掉
+        const tail = seg.content.startsWith(firstSegText) ? seg.content.slice(firstSegText.length) : '';
+        if (tail) for (const sentence of splitter.push(tail)) voiceService.enqueue(sentence);
         const rest = splitter.flush();
         if (rest) voiceService.enqueue(rest);
       } else if (speakableText(seg)) {
@@ -400,11 +553,22 @@ export default function App() {
     try {
       const permanentMemories = memoryDecayService.getPermanentMemories();
       const activeKeywords = memoryDecayService.getActiveKeywords();
+      const attachments = pendingMediaRef.current.map((m) => ({
+        mime: m.mime,
+        data: m.data,
+        kind: m.kind,
+        name: m.name,
+        durationSec: m.durationSec,
+        mosaic: m.mosaic,
+      }));
+      pendingMediaRef.current = [];
 
       const data = await streamChat(
         {
           // 後端會把連傳訊息合併後取最近 20 則；這裡多送一些原始訊息當餘裕，但不要整串歷史都送
-          messages: nextMessages.slice(-80).map((m) => ({ role: m.role, content: m.content })),
+          messages: contextMessages
+            .slice(-80)
+            .map((m) => ({ role: m.role, content: m.content, source: m.source, at: messageTime(m) ?? undefined })),
           personality,
           permanentMemories,
           activeKeywords,
@@ -418,6 +582,8 @@ export default function App() {
             : undefined,
           latestScreenshot: currentActivity?.screenshotUrl,
           latestScreenshotAt: currentActivity?.capturedAt,
+          staminaMode: exploreSettings.stamina,
+          attachments,
           preferredModel,
           clientTime: getClientTime(),
           // 讓她知道現在在放什麼（「這首是什麼」「下一首」才接得上）
@@ -433,8 +599,13 @@ export default function App() {
           if (controller.signal.aborted) return;
           streamedText += delta;
           render(streamedText, false);
+        },
+        // 她開口前的微表情（白眼、嘆氣、心虛、害羞、偷笑）：一收到就先做表情
+        (event, payload) => {
+          if (event === 'act' && !controller.signal.aborted) pet.triggerAct(payload?.act);
         }
       );
+      if (data.petStatus?.tier) setPetStatus(data.petStatus);
 
       if (controller.signal.aborted) return;
 
@@ -450,6 +621,34 @@ export default function App() {
       // 等第 2 則之後的訊息都「打完字」送出，才算這輪回覆結束
       await revealChain;
       if (controller.signal.aborted) return;
+
+      // 她真的上網找到的東西：梗圖一張一則、連結整理成一則（content 也寫給她自己看，之後聊天記得傳過什麼）
+      if (Array.isArray(data.attachments) && data.attachments.length) {
+        const extra: ChatMessage[] = [];
+        data.attachments.forEach((a: any, i: number) => {
+          if (a?.type === 'image' && a.url) {
+            extra.push({
+              id: `${petMsgBase}_img_${i}`,
+              role: 'pet',
+              content: `（傳了梗圖：${a.title || ''} ${a.link || ''}）`,
+              image: { url: a.url, link: a.link, title: a.title },
+              timestamp: timestamp(),
+              isRead: true,
+            });
+          }
+        });
+        const links = data.attachments.filter((a: any) => a?.type === 'link' && a.url);
+        if (links.length) {
+          extra.push({
+            id: `${petMsgBase}_links`,
+            role: 'pet',
+            content: links.map((a: any) => `🔗 ${a.title || ''}\n${a.url}`).join('\n\n'),
+            timestamp: timestamp(),
+            isRead: true,
+          });
+        }
+        if (extra.length) setMessages((prev) => [...prev, ...extra]);
+      }
 
       // 後端回傳的情緒訊號 → 桌寵切換情緒動作；聊完心情與好感度也變了，更新一下
       pet.triggerEmotion(data.emotion);
@@ -488,8 +687,11 @@ export default function App() {
 
   // 免持語音輸入：說完自動轉文字並送出；開始收音時先讓貓貓閉嘴，避免麥克風收到她的聲音
   const voiceInput = useVoiceInput({
-    onResult: (text) => handleSendMessage(text),
-    onStart: () => voiceService.stop(),
+    onResult: (text) => handleSendMessage(text, { immediate: true }),
+    onStart: () => {
+      markPetInteraction();
+      voiceService.stop();
+    },
   });
   const [voiceHotkey, setVoiceHotkey] = useState<string | null>(null);
 
@@ -626,24 +828,64 @@ export default function App() {
     void relation.report('discovery_opened'); // 主人有看她推薦的東西 → 開心、好感 +
   };
 
+  /** 她自己主動說的一句話（Gemini 網頁吐槽、突然想起的事）：冒泡泡、出聲、記進聊天；正在跟她聊天時就不插嘴 */
+  const petSays = (data: any) => {
+    const text = typeof data?.text === 'string' ? data.text.trim() : '';
+    if (!text || isWaitingRef.current) return;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: 'msg_pet_say_' + Date.now(),
+        role: 'pet',
+        content: text,
+        timestamp: new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
+        isRead: true,
+      },
+    ]);
+    triggerSpeak(text);
+    if (data?.emotion) pet.triggerEmotion(data.emotion);
+  };
+
   // 後端主動推播（SSE）
   useServerEvents({
     hello: (data) => setExploreStatus({ state: data?.exploring ? 'exploring' : 'idle' }),
     discovery: (data) => handleDiscovery(data as Discovery),
     'explore-status': (data) => setExploreStatus(data as ExploreStatus),
+    // 主人在瀏覽器問 Gemini → 她在旁邊偷看，吐槽一句（正在跟她聊天時就不插嘴）
+    'gemini-web': (data) => petSays(data),
+    // 她自己突然想到要說的話（例如閒置時想起你上次在看的東西）
+    'pet-says': (data) => petSays(data),
+    busy: (data) => applyBusy(data),
+    meal: (data) => {
+      if (data?.status === 'eating') setEatingUntil(Number(data.until) || Date.now() + 45 * 60 * 1000);
+      else if (data?.status === 'full') setEatingUntil(0);
+      else if (data?.status === 'hungry') pet.triggerEmotion('hungry');
+    },
+    'line-history': (data) => {
+      if (Array.isArray(data?.items)) setLineHistory(data.items);
+    },
+    // 在 LINE 上聊天時她發現的喜好關鍵字 → 一樣記進桌寵的長期記憶
+    keywords: (data) => {
+      if (!Array.isArray(data)) return;
+      for (const kw of data) {
+        if (kw?.keyword) memoryDecayService.reinforceKeyword(kw.keyword, kw.category, kw.notes);
+      }
+    },
   });
 
-  // 閒置偵測：主人超過設定時間沒操作電腦 → 自動出門探索
+  // 冷落偵測：主人超過設定時間（預設 15 分鐘）沒點她、沒跟她聊天 → 自動出門探索
   useIdleExplorer({
     enabled: exploreSettings.enabled,
     idleMinutes: exploreSettings.idleMinutes,
     onIdle: () => requestExplore('idle'),
   });
 
-  // 主動打招呼：開啟桌寵 / 離開回來 / 深夜提醒（像朋友注意到你來了）
+  // 主動打招呼：開啟桌寵 / 離開回來 / 深夜提醒 / 整點報時（像朋友注意到你來了）
+  const lastGreetAtRef = useRef(0);
   const requestGreeting = async (reason: GreetingReason, awayMinutes: number, awaySince: number) => {
     // 主人正在等回覆或在講話時，不要插話
     if (isWaitingRef.current || voiceInput.state !== 'idle') return;
+    lastGreetAtRef.current = Date.now();
     try {
       // 主人不在時貓貓自己找到的東西（探索結果的 id 是 disc_時間戳）
       const foundWhileAway = videos
@@ -664,7 +906,16 @@ export default function App() {
         }),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.text) return;
+      // 主動說話的閘門說先不要（主人不在、剛起床、前面的話還沒回、今天說太多）
+      if (data?.skipped) return;
+      // 報時一定要報：Gemini 沒回應就用簡單的一句
+      const text: string =
+        res.ok && data?.text
+          ? data.text
+          : reason === 'hourly'
+            ? `${new Date().getHours()} 點了喵～`
+            : '';
+      if (!text) return;
       if (isWaitingRef.current) return; // 等回應期間主人開始聊天了 → 不插話
 
       setMessages((prev) => [
@@ -672,18 +923,31 @@ export default function App() {
         {
           id: `msg_greet_${Date.now()}`,
           role: 'pet',
-          content: data.text,
+          content: text,
           timestamp: new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' }),
           isRead: true,
         },
       ]);
-      triggerSpeak(data.text);
-      pet.triggerEmotion(data.emotion);
+      triggerSpeak(text);
+      // 早上賴床：抱著枕頭還沒醒（主人一跟她說話就會醒）
+      if (typeof data?.asleep === 'boolean') setPetStatus((prev) => ({ ...prev, asleep: data.asleep }));
+      if (!data?.asleep) pet.triggerEmotion(data?.emotion || 'happy');
       void relation.refresh(); // 回來打招呼時心情可能因為「被丟下太久」變差了
     } catch (err) {
       console.warn('Greeting error:', err);
     }
   };
+
+  // 整點報時：她在忙（回話中、聽你說話）就晚一點補報；剛跟你打過招呼（2 分鐘內）就不重複
+  useHourlyChime({
+    enabled: exploreSettings.hourlyChime,
+    onChime: () => {
+      if (isWaitingRef.current || voiceInput.state !== 'idle') return false;
+      if (Date.now() - lastGreetAtRef.current < 2 * 60 * 1000) return true;
+      void requestGreeting('hourly', 0, Date.now());
+      return true;
+    },
+  });
 
   // 事件日記：每累積幾句話、或主人離開電腦時，把對話整理成「發生過的事」
   const diary = useDiaryCompiler(messages, isStreamingOrWaiting);
@@ -692,12 +956,18 @@ export default function App() {
     greetOnReturn: exploreSettings.greetOnReturn,
     lateNightReminder: exploreSettings.lateNightReminder,
     onGreet: (reason, awayMinutes, awaySince) => requestGreeting(reason, awayMinutes, awaySince),
-    onAway: () => diary.compileNow(),
+  });
+
+  // 主人 10 分鐘沒點她、沒跟她聊天 → 趁空檔把對話整理成事件日記（沒有新對話就不會做事）
+  useIdleExplorer({
+    enabled: true,
+    idleMinutes: 10,
+    onIdle: () => diary.compileNow(),
   });
 
   // 5. Ask Twin Cat about a specific discovered video in chat
   const handleAskAboutVideo = (video: DiscoveredVideo) => {
-    handleSendMessage(`貓貓，跟我分享一下你剛才在手帳記下的這部《${video.title}》！它在講什麼？`);
+    handleSendMessage(`貓貓，跟我分享一下你剛才在手帳記下的這部《${video.title}》！它在講什麼？`, { immediate: true });
   };
 
   const handleDeleteVideo = (id: string) => {
@@ -766,13 +1036,6 @@ export default function App() {
       onSelect: () => setMusicOpen((v) => !v),
     },
     {
-      id: 'mute',
-      label: voiceEnabled ? '靜音' : '開聲音',
-      icon: voiceEnabled ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5" />,
-      active: !voiceEnabled,
-      onSelect: () => setVoiceEnabled((v) => !v),
-    },
-    {
       id: 'settings',
       label: '設定',
       icon: <Settings2 className="w-5 h-5" />,
@@ -780,6 +1043,41 @@ export default function App() {
       onSelect: () => (settingsOpen ? setSettingsOpen(false) : openSettings(settingsTab)),
     },
   ];
+
+  // 沒碰她就躲起來（只剩呆毛）：設定記在 localStorage
+  const [autoHideSettings, setAutoHideSettings] = useState<{ enabled: boolean; seconds: number; clock?: boolean }>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(AUTO_HIDE_KEY) || 'null');
+      if (v && typeof v.enabled === 'boolean' && typeof v.seconds === 'number') return v;
+    } catch {
+      // ignore
+    }
+    return { enabled: true, seconds: 5 };
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTO_HIDE_KEY, JSON.stringify(autoHideSettings));
+    } catch {
+      // ignore
+    }
+  }, [autoHideSettings]);
+
+  // 她有事要做（說話、頭上有泡泡、推播、等回覆、聽你說話、被摸頭）或你開著任何面板時 → 一定出來
+  const autoHide = useAutoHide({
+    enabled: autoHideSettings.enabled,
+    delayMs: autoHideSettings.seconds * 1000,
+    keepVisible:
+      isTalking ||
+      Boolean(speechBubbleText) ||
+      Boolean(discovery) ||
+      isStreamingOrWaiting ||
+      voiceInput.state !== 'idle' ||
+      pet.state === 'patting' ||
+      isChatOpen ||
+      settingsOpen ||
+      radialMenu.open ||
+      activeModal !== 'none',
+  });
 
   return (
     <div
@@ -811,11 +1109,11 @@ export default function App() {
             <ChatInterface
               className="h-full"
               onClose={() => setIsChatOpen(false)}
-              messages={messages}
-              onSendMessage={handleSendMessage}
+              messages={chatDisplay}
+              onSendMessage={(text, media) => handleSendMessage(text, { media })}
               onInterrupt={handleInterrupt}
               chatStyle={chatStyle}
-              onToggleChatStyle={() => setChatStyle((prev) => (prev === 'line' ? 'gemini' : 'line'))}
+              onToggleChatStyle={() => {}}
               voiceEnabled={voiceEnabled}
               onToggleVoice={() => setVoiceEnabled(!voiceEnabled)}
               onClearMessages={() => setMessages(INITIAL_MESSAGES)}
@@ -851,6 +1149,8 @@ export default function App() {
         hasCustomImage={Boolean(appearance.customImgUrl)}
         onUploadCustomImage={appearance.uploadCustomImage}
         onPreviewPetState={pet.previewState}
+        autoHide={autoHideSettings}
+        onAutoHideChange={setAutoHideSettings}
         preferredModel={preferredModel}
         onPreferredModelChange={setPreferredModel}
         voiceEnabled={voiceEnabled}
@@ -878,12 +1178,24 @@ export default function App() {
             snapshot={relation.snapshot}
             onNicknameChange={(nickname) => relation.update({ nickname })}
             onRemoveJoke={relation.removeJoke}
+            onPatch={(patch) => relation.update(patch)}
           />
         }
       />
 
-      {/* 桌寵本體：固定在右下角的座標點 */}
-      <div className="absolute z-30 right-2 bottom-2" style={{ width: 'var(--pet-w)', height: 'var(--pet-h)' }}>
+      {/* 桌寵本體：固定在右下角的座標點；沒碰她一陣子就往下溜出畫面 */}
+      <motion.div
+        className={`absolute z-30 right-2 bottom-2 ${autoHide.hidden ? 'pointer-events-none' : ''}`}
+        style={{ width: 'var(--pet-w)', height: 'var(--pet-h)' }}
+        aria-hidden={autoHide.hidden}
+        initial={false}
+        animate={autoHide.hidden ? { y: ['0%', '-6%', '118%'] } : { y: '0%' }}
+        transition={
+          autoHide.hidden
+            ? { duration: 0.75, times: [0, 0.25, 1], ease: ['easeOut', 'easeIn'] }
+            : { type: 'spring', stiffness: 260, damping: 17 }
+        }
+      >
         <PetStage
           visualMode={appearance.visualMode}
           customImgUrl={appearance.customImgUrl}
@@ -908,12 +1220,23 @@ export default function App() {
           discovery={discovery}
           isExploring={exploreStatus.state === 'exploring'}
           onOpenDiscovery={() => discovery && openDiscovery(discovery)}
+          away={busyInfo}
+          onCallBack={() => {
+            void fetch('/api/busy/end', { method: 'POST', headers: { 'X-Gemini-Pet': '1' } })
+              .then((r) => r.json())
+              .then(applyBusy)
+              .catch(() => {});
+          }}
           onDismissDiscovery={() => {
             setDiscovery(null);
             void relation.report('discovery_dismissed'); // 直接關掉 → 有點失落
           }}
         />
-      </div>
+      </motion.div>
+
+      {/* 她躲起來時留在角落的呆毛，點一下叫她出來 */}
+      <Ahoge visible={autoHide.hidden} onClick={autoHide.wake} />
+      <SignClock visible={autoHide.hidden && autoHideSettings.clock !== false} onClick={autoHide.wake} />
 
       {/* 迷你音樂播放器（立繪左邊） */}
       <MusicPlayer music={music} open={musicOpen} onClose={() => setMusicOpen(false)} />

@@ -12,7 +12,7 @@ export function useServerEvents(handlers: Record<string, (data: any) => void>) {
 
   useEffect(() => {
     const source = new EventSource('/api/events');
-    const names = ['hello', 'discovery', 'explore-status'];
+    const names = ['hello', 'discovery', 'explore-status', 'keywords', 'line-history', 'meal', 'gemini-web', 'pet-says', 'busy'];
     const listeners = names.map((name) => {
       const listener = (e: MessageEvent) => {
         try {

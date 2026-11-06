@@ -3,12 +3,12 @@ import { removeFakeTransparency } from '../utils/removeFakeTransparency';
 import { loadCustomAvatar, saveCustomAvatar } from '../services/avatarStore';
 
 /**
- * 立繪外觀：目前顯示哪種立繪（動態桌寵 / 自訂圖 / 原片全景）＋自訂圖的載入與上傳。
+ * 立繪外觀：目前顯示哪種立繪（動態桌寵 / 自訂圖）＋自訂圖的載入與上傳。
  * 桌寵本體與設定面板共用同一份狀態。
  */
 
-export type VisualMode = 'mv_full' | 'chibi' | 'custom';
-const VISUAL_MODES: VisualMode[] = ['mv_full', 'chibi', 'custom'];
+export type VisualMode = 'chibi' | 'custom';
+const VISUAL_MODES: VisualMode[] = ['chibi', 'custom'];
 const VISUAL_MODE_KEY = 'gemini_twin_cat_visual_mode';
 
 export function useAvatarAppearance() {
@@ -16,7 +16,7 @@ export function useAvatarAppearance() {
   const [visualMode, setVisualMode] = useState<VisualMode>(() => {
     try {
       const saved = localStorage.getItem(VISUAL_MODE_KEY);
-      if (saved === 'live_rig') return 'chibi';
+      if (saved === 'live_rig' || saved === 'mv_full') return 'chibi';
       return saved && (VISUAL_MODES as string[]).includes(saved) ? (saved as VisualMode) : 'chibi';
     } catch {
       return 'chibi';

@@ -1,8 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Cpu, Image as ImageIcon, Monitor, Sliders, Upload, Volume2, VolumeX, X, Wand2, Sparkles, Maximize2, Compass, Loader2 } from 'lucide-react';
+import { Cpu, Image as ImageIcon, Sliders, Upload, X, Wand2, Sparkles, Compass, Loader2 } from 'lucide-react';
 import type { DiscoverySource, ExploreSettings, GeminiModelOption } from '../types';
 import type { VisualMode } from '../hooks/useAvatarAppearance';
-import { ALL_PET_STATES, type PetStateId } from './pet/petStates';
+import type { PetStateId } from './pet/petStates';
+import { WorkScheduleEditor } from './WorkScheduleEditor';
+import { UsagePanel } from './UsagePanel';
+import { WorkshopPanel } from './WorkshopPanel';
+import { BusyPanel } from './BusyPanel';
+import { voiceService } from '../services/voiceService';
 
 /**
  * 設定面板（半透明懸浮圖層）。
@@ -26,6 +31,9 @@ interface SettingsPanelProps {
   hasCustomImage: boolean;
   onUploadCustomImage: (file: File) => void;
   onPreviewPetState: (state: PetStateId | null) => void;
+  /** 沒碰她就躲起來（只剩呆毛） */
+  autoHide: { enabled: boolean; seconds: number; clock?: boolean };
+  onAutoHideChange: (v: { enabled: boolean; seconds: number; clock?: boolean }) => void;
   preferredModel: GeminiModelOption;
   onPreferredModelChange: (m: GeminiModelOption) => void;
   voiceEnabled: boolean;
@@ -43,6 +51,7 @@ interface SettingsPanelProps {
 }
 
 const IDLE_OPTIONS = [5, 10, 15, 30, 60];
+const AUTO_HIDE_OPTIONS = [5, 10, 30, 60];
 
 const SOURCE_OPTIONS: Array<[DiscoverySource, string]> = [
   ['ptt', '💬 PTT'],
@@ -67,6 +76,7 @@ const MODEL_OPTIONS: Array<[GeminiModelOption, string]> = [
 export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
   const { open, onClose, initialTab } = props;
   const [tab, setTab] = useState<Tab>(initialTab ?? 'look');
+  const [speed, setSpeed] = useState<number>(voiceService.getSpeed());
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -83,7 +93,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
   const tabs: Array<[Tab, string, React.ReactNode]> = [
     ['look', '外觀', <ImageIcon key="i" className="w-3.5 h-3.5" />],
     ['model', '模型', <Cpu key="c" className="w-3.5 h-3.5" />],
-    ['screen', '偵測', <Monitor key="m" className="w-3.5 h-3.5" />],
     ['persona', '個性', <Sliders key="s" className="w-3.5 h-3.5" />],
     ['explore', '主動', <Compass key="e" className="w-3.5 h-3.5" />],
   ];
@@ -144,7 +153,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
           <div className="flex gap-1.5">
             {modeButton('chibi', '動態桌寵', <Wand2 className="w-3.5 h-3.5" />)}
             {modeButton('custom', '自訂立繪', <Sparkles className="w-3.5 h-3.5" />, !props.hasCustomImage)}
-            {modeButton('mv_full', '原片全景', <Maximize2 className="w-3.5 h-3.5" />)}
           </div>
           <input
             ref={fileRef}
@@ -165,22 +173,46 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
             <Upload className="w-3.5 h-3.5" /> 上傳自訂立繪（自動去除網格背景）
           </button>
 
-          <p className="text-[11px] text-slate-400 pt-1">預覽動態桌寵動作</p>
-          <div className="grid grid-cols-4 gap-1.5">
-            {ALL_PET_STATES.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => {
-                  props.onVisualModeChange('chibi');
-                  props.onPreviewPetState(s.id);
-                }}
-                className="px-1 py-1.5 rounded-lg text-[11px] bg-slate-900/70 border border-slate-700 hover:border-pink-400/60 hover:bg-purple-900/40"
-              >
-                {s.emoji} {s.label}
-              </button>
-            ))}
+          <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs">
+            <span>
+              🙈 沒碰她就躲起來
+              <span className="block text-[10px] text-slate-400 mt-0.5">只剩呆毛在角落，點呆毛叫她出來；她要說話或推播時會自己跑出來</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={props.autoHide.enabled}
+              onChange={(e) => props.onAutoHideChange({ ...props.autoHide, enabled: e.target.checked })}
+              className="w-4 h-4 accent-purple-500 shrink-0"
+            />
+          </label>
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="text-slate-300">多久沒碰她就躲</span>
+            <select
+              value={props.autoHide.seconds}
+              onChange={(e) => props.onAutoHideChange({ ...props.autoHide, seconds: Number(e.target.value) })}
+              disabled={!props.autoHide.enabled}
+              className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs disabled:opacity-50"
+            >
+              {AUTO_HIDE_OPTIONS.map((sec) => (
+                <option key={sec} value={sec}>
+                  {sec} 秒
+                </option>
+              ))}
+            </select>
           </div>
+          <label className={`flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs ${props.autoHide.enabled ? '' : 'opacity-50'}`}>
+            <span>
+              🕐 躲起來時舉牌報時間
+              <span className="block text-[10px] text-slate-400 mt-0.5">在呆毛旁邊舉著小木牌；滑鼠移上去看日期，整點牌子會晃一下</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={props.autoHide.clock !== false}
+              onChange={(e) => props.onAutoHideChange({ ...props.autoHide, clock: e.target.checked })}
+              disabled={!props.autoHide.enabled}
+              className="w-4 h-4 accent-purple-500 shrink-0"
+            />
+          </label>
         </div>
 
         {/* 模型 / 語音 */}
@@ -197,31 +229,44 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
               </option>
             ))}
           </select>
-          <button
-            type="button"
-            onClick={props.onToggleVoice}
-            className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs border ${
-              props.voiceEnabled
-                ? 'bg-purple-900/50 border-purple-400/50 text-purple-100'
-                : 'bg-slate-900/70 border-slate-700 text-slate-400'
-            }`}
-          >
-            {props.voiceEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-            {props.voiceEnabled ? '語音朗讀：開啟' : '語音朗讀：靜音'}
-          </button>
+          <UsagePanel />
+          <label className="block px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs space-y-1">
+            <span className="flex justify-between">
+              <span>🗣️ 說話速度（GPT-SoVITS 調，不會變調）</span>
+              <span className="font-mono text-purple-300">{speed.toFixed(2)}x</span>
+            </span>
+            <input
+              type="range"
+              min="0.8"
+              max="1.4"
+              step="0.05"
+              value={speed}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setSpeed(v);
+                voiceService.setSpeed(v);
+              }}
+              className="w-full accent-purple-500"
+            />
+          </label>
           <p className="text-[11px] text-slate-400 leading-relaxed">
             🎙️ 免持語音輸入：{props.voiceHotkey ? `全域熱鍵 ${props.voiceHotkey}` : '對話框裡的麥克風按鈕'}，說完停一下會自動送出。
           </p>
         </div>
 
         {/* 螢幕偵測：一直掛載，切換分頁 / 關閉面板都不會中斷螢幕分享 */}
-        <div className={tab === 'screen' ? '' : 'hidden'}>{props.screenTracker}</div>
+        {/* 螢幕偵測不在分頁列上，只從圓形選單的「螢幕偵測」打開（元件一直掛著，螢幕分享不會中斷） */}
+        <div className={tab === 'screen' ? 'space-y-2' : 'hidden'}>
+          <p className="text-xs font-semibold">🖥️ 螢幕偵測</p>
+          {props.screenTracker}
+        </div>
 
         {/* 個性 */}
         <div className={tab === 'persona' ? '' : 'hidden'}>{props.personalityTuner}</div>
 
         {/* 主動互動：關係 + 打招呼 + 自主網路探索 */}
         <div className={tab === 'explore' ? 'space-y-3' : 'hidden'}>
+          <WorkshopPanel />
           {props.relationship}
           <p className="text-[11px] text-slate-400">陪伴感</p>
           <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs">
@@ -248,12 +293,41 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
               className="w-4 h-4 accent-purple-500 shrink-0"
             />
           </label>
+          <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs">
+            <span>
+              🕐 整點報時
+              <span className="block text-[10px] text-slate-400 mt-0.5">每到整點跳出來報時，順便說句話；你離開電腦時不會報</span>
+            </span>
+            <input
+              type="checkbox"
+              checked={ex.hourlyChime}
+              onChange={(e) => setEx({ hourlyChime: e.target.checked })}
+              className="w-4 h-4 accent-purple-500 shrink-0"
+            />
+          </label>
+          <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs">
+            <span>
+              🔋 體力系統
+              <span className="block text-[10px] text-slate-400 mt-0.5">陪你聊太久、深夜或午飯後，她會累、回得比較短、會抱怨想休息（說很急時還是會幫你）</span>
+            </span>
+            <select
+              value={ex.stamina ?? 'normal'}
+              onChange={(e) => setEx({ stamina: e.target.value as 'off' | 'light' | 'normal' })}
+              className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs shrink-0"
+            >
+              <option value="normal">正常</option>
+              <option value="light">輕微</option>
+              <option value="off">關閉</option>
+            </select>
+          </label>
+          <WorkScheduleEditor />
+          <BusyPanel />
 
           <p className="text-[11px] text-slate-400 pt-1">自主網路探索</p>
           <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs">
             <span>
               🧭 閒置時自動上網探索
-              <span className="block text-[10px] text-slate-400 mt-0.5">主人一段時間沒操作電腦，貓貓會自己去逛 YouTube / 文章 / 論壇，回來推給你</span>
+              <span className="block text-[10px] text-slate-400 mt-0.5">主人一段時間沒點她、沒跟她聊天，貓貓會自己去逛 YouTube / 文章 / 論壇，回來推給你</span>
             </span>
             <input
               type="checkbox"
@@ -264,7 +338,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
           </label>
 
           <div className="flex items-center justify-between gap-2 text-xs">
-            <span className="text-slate-300">閒置多久後出發</span>
+            <span className="text-slate-300">多久沒理她就出發</span>
             <select
               value={ex.idleMinutes}
               onChange={(e) => setEx({ idleMinutes: Number(e.target.value) })}

@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Sparkles, Smile, Volume2, VolumeX, Trash2, ArrowLeftRight, CheckCheck, Square, Mic, Loader2, X } from 'lucide-react';
+import { Paperclip, Film, Send, Smile, Volume2, VolumeX, CheckCheck, Square, Mic, Loader2, X } from 'lucide-react';
+import { prepareChatMedia, type PreparedMedia } from '../utils/chatMedia';
 import { ChatMessage, ChatStyle, PersonalityConfig, MemoryKeyword, ScreenActivity } from '../types';
 import type { VoiceInputState } from '../hooks/useVoiceInput';
 import { STICKERS } from '../services/replyRhythm';
@@ -31,7 +32,7 @@ function renderWithLinks(raw: string): React.ReactNode {
 
 interface ChatInterfaceProps {
   messages: ChatMessage[];
-  onSendMessage: (text: string) => Promise<void>;
+  onSendMessage: (text: string, media?: PreparedMedia) => Promise<void>;
   onInterrupt?: () => void;
   chatStyle: ChatStyle;
   onToggleChatStyle: () => void;
@@ -79,6 +80,25 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 }) => {
   const [inputText, setInputText] = useState('');
   const [showStickers, setShowStickers] = useState(false);
+  // 準備要傳的圖片 / 影片（按送出才真的傳）
+  const [pendingMedia, setPendingMedia] = useState<PreparedMedia | null>(null);
+  const [mediaBusy, setMediaBusy] = useState(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const attachFile = async (file?: File | null) => {
+    if (!file) return;
+    setMediaError(null);
+    setMediaBusy(true);
+    try {
+      setPendingMedia(await prepareChatMedia(file));
+    } catch (err: any) {
+      setMediaError(err?.message || '這個檔案傳不了');
+    } finally {
+      setMediaBusy(false);
+    }
+  };
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto scroll to latest message（串流中逐字更新時用 auto，避免平滑捲動一直排隊造成抖動）
@@ -89,10 +109,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
   const handleSend = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!inputText.trim()) return;
+    if (!inputText.trim() && !pendingMedia) return;
     const text = inputText;
+    const media = pendingMedia || undefined;
     setInputText('');
-    await onSendMessage(text);
+    setPendingMedia(null);
+    await onSendMessage(text, media);
   };
 
   const sendSticker = (stickerText: string) => {
@@ -100,16 +122,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     onSendMessage(stickerText);
   };
 
-  const quickPrompts = [
-    '你剛才看螢幕知道我在做什麼嗎？',
-    '你待機時有找到什麼好看的影片嗎？',
-    '你還記得我最喜歡什麼嗎？',
-    '今天好累喔，摸摸頭安慰我一下喵～',
-  ];
-
   return (
     <div
-      className={`flex flex-col ${className} rounded-2xl overflow-hidden border shadow-2xl backdrop-blur-xl transition-colors duration-300 ${
+      onDragOver={(e) => {
+        if (Array.from(e.dataTransfer.types).includes('Files')) {
+          e.preventDefault();
+          setDragOver(true);
+        }
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        const file = e.dataTransfer.files?.[0];
+        if (!file) return;
+        e.preventDefault();
+        setDragOver(false);
+        void attachFile(file);
+      }}
+      className={`relative flex flex-col ${dragOver ? 'ring-2 ring-[#06C755]' : ''} ${className} rounded-2xl overflow-hidden border shadow-2xl backdrop-blur-xl transition-colors duration-300 ${
         chatStyle === 'line'
           ? 'bg-[#1E2329]/90 border-[#06C755]/40 shadow-emerald-950/30'
           : 'bg-slate-900/90 border-purple-500/40 shadow-purple-950/30'
@@ -144,38 +173,15 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="font-bold text-sm sm:text-base">
-                雙子星貓 · 星穹領航員
+                雙子星貓・西雅
               </h3>
-              <span
-                className={`text-[10px] px-1.5 py-0.5 rounded font-mono uppercase font-semibold ${
-                  chatStyle === 'line'
-                    ? 'bg-[#06C755]/20 text-[#06C755] border border-[#06C755]/40'
-                    : 'bg-purple-950/80 text-purple-300 border border-purple-800/40'
-                }`}
-              >
-                {chatStyle === 'line' ? 'LINE 模式' : 'GEMINI 模式'}
-              </span>
             </div>
-            <p className="text-xs text-slate-400">
-              {currentActivity
-                ? `正在注視：${currentActivity.title}`
-                : '✦ 指尖冒氣泡、靈感為你飆，穿梭信息海跳替你解煩惱喵～'}
-            </p>
+            {currentActivity && <p className="text-xs text-slate-400">{`正在注視：${currentActivity.title}`}</p>}
           </div>
         </div>
 
         {/* Header Action Tools */}
         <div className="flex items-center gap-1.5">
-          {/* Style Switcher */}
-          <button
-            onClick={onToggleChatStyle}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors"
-            title="切換 LINE / Gemini 對話介面"
-          >
-            <ArrowLeftRight className="w-3 h-3 text-purple-400" />
-            <span className="hidden sm:inline">切換樣式</span>
-          </button>
-
           {/* Voice Switcher */}
           <button
             onClick={onToggleVoice}
@@ -187,15 +193,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             title={voiceEnabled ? '語音朗讀開啟' : '靜音中'}
           >
             {voiceEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-          </button>
-
-          {/* Clear Button */}
-          <button
-            onClick={onClearMessages}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition-colors"
-            title="清空聊天記錄"
-          >
-            <Trash2 className="w-4 h-4" />
           </button>
 
           {onClose && (
@@ -235,7 +232,40 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               )}
 
               {/* Message content（貼圖訊息顯示成大張貼圖卡，不包對話框） */}
-              {msg.sticker && STICKERS[msg.sticker] ? (
+              {msg.media ? (
+                // 主人傳的圖片 / 影片（紀錄裡只存縮圖）
+                <div className="max-w-[60%] flex flex-col items-end gap-1">
+                  <div className="relative rounded-2xl overflow-hidden border border-slate-700 bg-black shadow-md">
+                    <img src={msg.media.thumb} alt={msg.media.name || '附件'} className="block max-h-48 object-contain" />
+                    {msg.media.kind === 'video' && (
+                      <span className="absolute bottom-1 right-1 flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-white">
+                        <Film className="w-3 h-3" />
+                        {msg.media.durationSec ? `${Math.round(msg.media.durationSec)} 秒` : '影片'}
+                      </span>
+                    )}
+                  </div>
+                  {msg.content && !msg.content.startsWith('（傳了') && (
+                    <div className="rounded-2xl px-3.5 py-2 text-xs sm:text-sm bg-[#06C755] text-white rounded-br-xs whitespace-pre-wrap break-words">
+                      {msg.content}
+                    </div>
+                  )}
+                </div>
+              ) : msg.image ? (
+                // 她真的上網找到的梗圖：點圖片打開原文
+                <a
+                  href={msg.image.link || msg.image.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="block max-w-[72%] rounded-2xl overflow-hidden border border-slate-700 bg-slate-900 shadow-md"
+                  title={msg.image.title}
+                >
+                  <img src={msg.image.url} alt={msg.image.title || '梗圖'} className="block w-full max-h-72 object-contain bg-black" />
+                  {msg.image.title && (
+                    <span className="block px-2.5 py-1.5 text-[11px] leading-snug text-slate-300">{msg.image.title}</span>
+                  )}
+                </a>
+              ) : msg.sticker && STICKERS[msg.sticker] ? (
                 <div className="flex flex-col items-center justify-center w-24 h-24 rounded-2xl bg-gradient-to-br from-pink-200/90 to-purple-200/90 border-2 border-white/70 shadow-lg select-none">
                   <span className="text-4xl leading-none">{STICKERS[msg.sticker].emoji}</span>
                   <span className="mt-1 text-[11px] font-bold text-purple-800">{STICKERS[msg.sticker].label}</span>
@@ -268,6 +298,11 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                     <CheckCheck className="w-3 h-3" /> 已讀
                   </span>
                 )}
+                {msg.source === 'line' && (
+                  <span className="font-sans font-bold text-[9px] text-[#06C755]" title="在 LINE 上的對話">
+                    LINE
+                  </span>
+                )}
                 <span>{msg.timestamp}</span>
               </div>
             </div>
@@ -296,7 +331,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   style={{ animationDelay: '300ms' }}
                 />
               </div>
-              <span className="text-[11px]">雙子星貓輸入中…（可直接輸入打斷）</span>
+              <span className="text-[11px]">西雅輸入中…（可直接輸入打斷）</span>
               {onInterrupt && (
                 <button
                   type="button"
@@ -313,20 +348,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         )}
 
         <div ref={messagesEndRef} />
-      </div>
-
-      {/* Quick Prompts Bar */}
-      <div className="px-3 py-1.5 bg-slate-900/90 border-t border-slate-800 flex items-center gap-2 overflow-x-auto no-scrollbar">
-        <Sparkles className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-        {quickPrompts.map((q, idx) => (
-          <button
-            key={idx}
-            onClick={() => onSendMessage(q)}
-            className="shrink-0 px-2.5 py-1 text-[11px] rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition-colors"
-          >
-            {q}
-          </button>
-        ))}
       </div>
 
       {/* Sticker Drawer */}
@@ -394,6 +415,34 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         </div>
       )}
 
+      {(pendingMedia || mediaError) && (
+        <div className="px-3 py-2 bg-slate-900 border-t border-slate-800 flex items-center gap-2 text-[11px]">
+          {pendingMedia && (
+            <>
+              <img src={pendingMedia.thumb} alt="" className="w-12 h-12 rounded-lg object-cover border border-slate-700" />
+              <span className="flex-1 text-slate-300 truncate">
+                {pendingMedia.kind === 'video'
+                  ? `🎬 影片${pendingMedia.durationSec ? ` ${Math.round(pendingMedia.durationSec)} 秒` : ''}${pendingMedia.mosaic ? '（太大了，會改傳 9 張截圖）' : ''}`
+                  : '🖼️ 圖片'}
+                ・按送出就會傳給她，可以順便打字
+              </span>
+            </>
+          )}
+          {mediaError && <span className="flex-1 text-amber-300">{mediaError}</span>}
+          <button
+            type="button"
+            onClick={() => {
+              setPendingMedia(null);
+              setMediaError(null);
+            }}
+            className="p-1 rounded text-slate-400 hover:text-slate-200"
+            title="不傳了"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* Bottom Message Input Box — Always enabled so user can interrupt anytime */}
       <form
         onSubmit={handleSend}
@@ -407,6 +456,25 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         >
           <Smile className="w-5 h-5" />
         </button>
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={mediaBusy}
+          className="p-2 text-slate-400 hover:text-purple-300 hover:bg-slate-800 rounded-xl transition-colors disabled:opacity-50"
+          title="傳圖片或影片（也可以直接貼上或拖進對話框）"
+        >
+          {mediaBusy ? <Loader2 className="w-5 h-5 animate-spin" /> : <Paperclip className="w-5 h-5" />}
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,video/*"
+          className="hidden"
+          onChange={(e) => {
+            void attachFile(e.target.files?.[0]);
+            e.target.value = '';
+          }}
+        />
 
         {onToggleVoiceInput && (
           <button
@@ -436,17 +504,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           type="text"
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
+          onPaste={(e) => {
+            const file = Array.from(e.clipboardData.files || []).find((f) => /^(image|video)\//.test(f.type));
+            if (file) {
+              e.preventDefault();
+              void attachFile(file);
+            }
+          }}
           placeholder={
             isStreamingOrWaiting
               ? '隨時輸入並發送，將立即打斷思考並優先回覆你...'
               : chatStyle === 'line'
               ? '像平常回 LINE 一樣輸入訊息...'
-              : '輸入給雙子星貓的訊息...'
+              : '輸入給西雅的訊息...'
           }
           className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-purple-500/70 transition-colors"
         />
 
-        {isStreamingOrWaiting && onInterrupt && !inputText.trim() ? (
+        {isStreamingOrWaiting && onInterrupt && !inputText.trim() && !pendingMedia ? (
           <button
             type="button"
             onClick={onInterrupt}
@@ -459,7 +534,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
         ) : (
           <button
             type="submit"
-            disabled={!inputText.trim()}
+            disabled={!inputText.trim() && !pendingMedia}
             className={`p-2 rounded-xl text-white transition-all disabled:opacity-40 ${
               chatStyle === 'line'
                 ? 'bg-[#06C755] hover:bg-[#05b34c]'

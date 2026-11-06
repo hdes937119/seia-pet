@@ -33,6 +33,9 @@ export interface RelationshipState {
   streakDays: number; // 連續幾天都有來見她
   nickname: string; // 她對主人的暱稱（好朋友階段之後）
   insideJokes: InsideJoke[];
+  refusedNicknames: Array<{ name: string; at: number }>; // 主人說過不喜歡的稱呼（從對話整理出來，或設定面板）
+  nicknameOff: boolean; // 主人說過不要暱稱
+  nicknameRetryAt: number; // 暱稱被拒絕後，這個時間之前不再自己取新的
   today: DailyCounters;
 }
 
@@ -54,6 +57,9 @@ export const LEVELS = [
 const MOOD_BASELINE = 10; // 沒事時的心情：平常偏好
 const MOOD_HALF_LIFE_MS = 3 * 60 * 60 * 1000;
 const MAX_JOKES = 20;
+const MAX_REFUSED = 10;
+const REFUSED_REMIND_MS = 30 * 86400000; // 30 天內被拒絕的稱呼會在提示詞裡提醒她
+const NICKNAME_RETRY_MS = 3 * 86400000; // 暱稱被拒絕後，隔 3 天才會再自己取新的
 // 每天的好感度上限，避免狂刷
 const DAILY_CAP = { chat: 30, pat: 10, discovery: 5 };
 
@@ -81,6 +87,9 @@ function freshState(): RelationshipState {
     streakDays: 1,
     nickname: '',
     insideJokes: [],
+    refusedNicknames: [],
+    nicknameOff: false,
+    nicknameRetryAt: 0,
     today: { day: localDay(now), chat: 0, pat: 0, discovery: 0 },
   };
 }
@@ -226,7 +235,14 @@ export function createRelationship(dataDir: string) {
       `【你們的關係】：${lv.name}（認識第 ${days} 天，連續 ${s.streakDays} 天見面）。${lv.hint}。`,
     ];
     // 暱稱與共同的梗：真人朋友不會每句都叫暱稱、每次都講同一個梗 → 用機率決定這次能不能用
-    if (s.nickname && lv.index >= 2) {
+    // 主人對稱呼的意見（B 計畫：在對話裡說就算數）——一定要遵守
+    const refused = (s.refusedNicknames || [])
+      .filter((r) => now - r.at < REFUSED_REMIND_MS)
+      .slice(-3)
+      .map((r) => `「${r.name}」`);
+    if (refused.length) lines.push(`（主人說過不喜歡你叫他${refused.join('、')}，不要再這樣叫，也不要拿來開玩笑。）`);
+    if (s.nicknameOff) lines.push('（主人說過不想被叫暱稱，照平常的方式稱呼他就好。）');
+    if (s.nickname && lv.index >= 2 && !s.nicknameOff) {
       lines.push(
         Math.random() < 0.3
           ? `你給主人取的暱稱是「${s.nickname}」，這次可以自然地叫一次。`
@@ -253,6 +269,8 @@ export function createRelationship(dataDir: string) {
       streakDays: s.streakDays,
       nickname: s.nickname,
       insideJokes: s.insideJokes,
+      refusedNicknames: (s.refusedNicknames || []).map((r) => r.name),
+      nicknameOff: !!s.nicknameOff,
     };
   }
 
@@ -262,6 +280,7 @@ export function createRelationship(dataDir: string) {
     for (const t of texts) {
       const text = t.trim().slice(0, 60);
       if (!text || s.insideJokes.some((j) => j.text === text)) continue;
+      if ((s.refusedNicknames || []).some((r) => r.name.length >= 2 && text.includes(r.name))) continue; // 主人不喜歡的稱呼不當梗
       s.insideJokes.push({ id: `joke_${now}_${s.insideJokes.length}`, text, createdAt: now });
     }
     if (s.insideJokes.length > MAX_JOKES) s.insideJokes.splice(0, s.insideJokes.length - MAX_JOKES);
@@ -272,11 +291,67 @@ export function createRelationship(dataDir: string) {
     s.insideJokes = s.insideJokes.filter((j) => j.id !== id);
   }
 
+  /** 設定暱稱（設定面板手動填、或主人在對話裡說「叫我XX」）：主人自己要的就從拒絕清單拿掉 */
   function setNickname(name: string) {
-    load().nickname = name.trim().slice(0, 12);
+    const s = load();
+    const n = name.trim().slice(0, 12);
+    s.nickname = n;
+    if (n) {
+      s.nicknameOff = false;
+      s.refusedNicknames = (s.refusedNicknames || []).filter((r) => r.name !== n);
+    }
   }
 
-  return { apply, describe, snapshot, addJokes, removeJoke, setNickname, save, state: load };
+  /** 主人不喜歡某個稱呼（沒給名字＝現在的暱稱）：記進拒絕清單、清掉暱稱和相關的梗，3 天內不取新的。回傳被拒絕的名字 */
+  function refuseNickname(name?: string, now = Date.now()): string {
+    const s = load();
+    const n = (name || s.nickname || '').trim().slice(0, 12);
+    if (!n) return '';
+    s.refusedNicknames = [...(s.refusedNicknames || []).filter((r) => r.name !== n), { name: n, at: now }].slice(-MAX_REFUSED);
+    if (s.nickname && (s.nickname === n || s.nickname.includes(n) || n.includes(s.nickname))) s.nickname = '';
+    s.nicknameRetryAt = now + NICKNAME_RETRY_MS;
+    s.insideJokes = s.insideJokes.filter((j) => !(n.length >= 2 && j.text.includes(n)));
+    return n;
+  }
+
+  /** 主人不要任何暱稱（或在設定面板取消） */
+  function setNicknameOff(off: boolean, now = Date.now()) {
+    const s = load();
+    if (off) {
+      if (s.nickname) refuseNickname(s.nickname, now);
+      s.nickname = '';
+      s.nicknameOff = true;
+    } else {
+      s.nicknameOff = false;
+    }
+  }
+
+  /** 設定面板：讓她可以再用這個稱呼 */
+  function unrefuseNickname(name: string) {
+    const s = load();
+    s.refusedNicknames = (s.refusedNicknames || []).filter((r) => r.name !== name);
+  }
+
+  /** 可以自己幫主人取新暱稱嗎（沒暱稱、沒關掉、不在被拒絕後的冷卻期） */
+  function canCreateNickname(now = Date.now()): boolean {
+    const s = load();
+    return !s.nicknameOff && !s.nickname && now >= (s.nicknameRetryAt || 0);
+  }
+
+  return {
+    apply,
+    describe,
+    snapshot,
+    addJokes,
+    removeJoke,
+    setNickname,
+    refuseNickname,
+    setNicknameOff,
+    unrefuseNickname,
+    canCreateNickname,
+    save,
+    state: load,
+  };
 }
 
 export type Relationship = ReturnType<typeof createRelationship>;

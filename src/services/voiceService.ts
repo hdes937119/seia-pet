@@ -1,28 +1,48 @@
-export type MoeVoiceMode = 'moe_fast' | 'ai_cloud_moe' | 'jp_seiyuu';
-
 class VoiceService {
   private isEnabled: boolean = true;
   private volume: number = 0.95;
-  private pitch: number = 1.58; // High-pitched Japanese Moe Anime timbre (1.0 - 2.0)
-  private rate: number = 1.14;  // Energetic, bouncy anime girl cadence
-  private voiceMode: MoeVoiceMode = 'moe_fast';
+  // 語速交給 GPT-SoVITS 自己調（speed_factor，不會變調）；存在這台電腦的 localStorage
+  private speed: number = VoiceService.loadSpeed();
   private speakingListener: ((speaking: boolean) => void) | null = null;
   private audioCtx: AudioContext | null = null;
   private activeSource: AudioBufferSourceNode | null = null;
   private currentAudio: HTMLAudioElement | null = null;
+  // 對嘴用：目前這句語音的音量曲線（每 20ms 一格），播放時依播到哪裡查表
+  private currentEnvelope: { data: Float32Array; step: number; peak: number } | null = null;
+  private static readonly ENVELOPE_STEP = 0.02;
   private ttsAborts = new Set<AbortController>();
   // 逐句播放佇列：每一句一加入就先開始合成，播放時依序取出
   private queue: Array<Promise<string | null>> = [];
   private isPlayingQueue = false;
   // 每次 speak / stop 都會遞增，舊的 TTS 請求回來時就知道自己已經過期
   private speakToken = 0;
+  // GPT-SoVITS 單獨唸很短的句子（例如連傳時第一則的「等等！」「欸？」）常常會變成一片空白或被吞掉，
+  // 所以太短的句子先留著，跟下一句合併後再送去合成；等了一陣子都沒有下一句，才單獨唸。
+  private static readonly MIN_SPEAK_CHARS = 6; // 不含標點的字數
+  private static readonly SHORT_HOLD_MS = 3000; // 比連傳的「輸入中」最長 2.2 秒再久一點
+  private heldText = '';
+  private heldTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor() {
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.onvoiceschanged = () => {
-        this.getBestMoeVoice();
-      };
+  private static loadSpeed(): number {
+    try {
+      const v = Number(localStorage.getItem('seia-voice-speed'));
+      return Number.isFinite(v) && v >= 0.8 && v <= 1.4 ? v : 1;
+    } catch {
+      return 1;
     }
+  }
+
+  public setSpeed(speed: number) {
+    this.speed = Math.max(0.8, Math.min(1.4, speed));
+    try {
+      localStorage.setItem('seia-voice-speed', String(this.speed));
+    } catch {
+      // 存不了就只在這次有效
+    }
+  }
+
+  public getSpeed(): number {
+    return this.speed;
   }
 
   public setSpeakingListener(listener: (speaking: boolean) => void) {
@@ -40,14 +60,6 @@ class VoiceService {
     return this.isEnabled;
   }
 
-  public setVoiceMode(mode: MoeVoiceMode) {
-    this.voiceMode = mode;
-  }
-
-  public getVoiceMode(): MoeVoiceMode {
-    return this.voiceMode;
-  }
-
   public setVolume(vol: number) {
     this.volume = Math.max(0, Math.min(1, vol));
   }
@@ -56,154 +68,73 @@ class VoiceService {
     return this.volume;
   }
 
-  public setPitch(pitch: number) {
-    this.pitch = Math.max(0.8, Math.min(2.0, pitch));
-  }
-
-  public getPitch(): number {
-    return this.pitch;
-  }
-
-  public setRate(rate: number) {
-    this.rate = Math.max(0.7, Math.min(1.6, rate));
-  }
-
-  public getRate(): number {
-    return this.rate;
-  }
-
-  private getBestMoeVoice(preferJapaneseOnly: boolean = false): SpeechSynthesisVoice | null {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
-    const voices = window.speechSynthesis.getVoices();
-    if (!voices || voices.length === 0) return null;
-
-    if (preferJapaneseOnly) {
-      const jpVoices = [
-        'Google 日本語',
-        'Microsoft Nanami',
-        'Kyoko',
-        'O-Ren',
-        'Haruka',
-        'Sayaka',
-        'Ayumi',
-      ];
-      for (const name of jpVoices) {
-        const match = voices.find((v) => v.name.includes(name));
-        if (match) return match;
-      }
-      const anyJp = voices.find((v) => v.lang.startsWith('ja'));
-      if (anyJp) return anyJp;
-    }
-
-    // For Chinese + Japanese Moe feel, prioritize sweet/young female voices
-    const moePreferredNames = [
-      'Microsoft HsiaoChen',
-      'Xiaoxiao',
-      'Mei-Jia',
-      'Google 國語（臺灣）',
-      'Google 日本語',
-      'Kyoko',
-      'Microsoft Nanami',
-      'Hanhan',
-      'Ting-Ting',
-    ];
-
-    for (const name of moePreferredNames) {
-      const match = voices.find((v) => v.name.includes(name));
-      if (match) return match;
-    }
-
-    const zhTw = voices.find((v) => v.lang === 'zh-TW' || v.lang === 'zh-HK');
-    if (zhTw) return zhTw;
-
-    const jaJp = voices.find((v) => v.lang.startsWith('ja'));
-    if (jaJp) return jaJp;
-
-    const anyZh = voices.find((v) => v.lang.startsWith('zh'));
-    if (anyZh) return anyZh;
-
-    return voices[0] || null;
-  }
-
-  /**
-   * Plays WAV base64 through Web Audio API with Japanese Anime Moe Formant/Pitch Exciter
-   */
-  private async playCloudMoeAudio(base64Data: string): Promise<boolean> {
-    try {
-      if (!this.audioCtx) {
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        this.audioCtx = new AudioContextClass();
-      }
-      if (this.audioCtx.state === 'suspended') {
-        await this.audioCtx.resume();
-      }
-
-      const binary = atob(base64Data);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-
-      const audioBuffer = await this.audioCtx.decodeAudioData(bytes.buffer.slice(0));
-      const source = this.audioCtx.createBufferSource();
-      source.buffer = audioBuffer;
-
-      // Shift pitch/speed up slightly (e.g. 1.15x - 1.22x) for authentic anime moe seiyuu timbre
-      const moeShift = 1.0 + (this.pitch - 1.0) * 0.32;
-      source.playbackRate.value = Math.max(1.05, Math.min(1.3, moeShift));
-
-      // High-pass filter to remove deep chestiness
-      const highpass = this.audioCtx.createBiquadFilter();
-      highpass.type = 'highpass';
-      highpass.frequency.value = 210;
-
-      // High-shelf air boost for sparkling anime voice clarity
-      const highshelf = this.audioCtx.createBiquadFilter();
-      highshelf.type = 'highshelf';
-      highshelf.frequency.value = 3600;
-      highshelf.gain.value = 5.5;
-
-      const gainNode = this.audioCtx.createGain();
-      gainNode.gain.value = this.volume;
-
-      source.connect(highpass);
-      highpass.connect(highshelf);
-      highshelf.connect(gainNode);
-      gainNode.connect(this.audioCtx.destination);
-
-      this.activeSource = source;
-      if (this.speakingListener) this.speakingListener(true);
-
-      source.onended = () => {
-        this.activeSource = null;
-        if (this.speakingListener) this.speakingListener(false);
-      };
-
-      source.start(0);
-      return true;
-    } catch (err) {
-      console.warn('WebAudio cloud playback fallback:', err);
-      return false;
-    }
-  }
-
-  /** 打斷目前所有語音，改講這一段 */
+  /** 打斷目前所有語音，改講這一段（單獨一段話，短也直接唸，不等下一句） */
   public speak(text: string) {
     this.stop();
-    this.enqueue(text);
+    this.enqueueText(text, true);
   }
 
   /**
    * 加到播放佇列尾端（不打斷正在講的話）。
    * 串流對話時每收到完整一句就呼叫一次：第一句很快就能開口，後面的句子邊播邊合成。
+   * 太短的句子會先留著，跟下一句合併再唸。
    */
   public enqueue(text: string) {
+    this.enqueueText(text, false);
+  }
+
+  private enqueueText(text: string, force: boolean) {
     if (!this.isEnabled || typeof window === 'undefined') return;
     const cleanText = VoiceService.cleanForSpeech(text);
     if (!cleanText) return;
+    // 只有「♪」「…」這種沒字可唸的就不送去合成（以前會單獨送出一個空請求）
+    if (VoiceService.spokenLength(cleanText) === 0 && !this.heldText) return;
 
-    this.queue.push(this.synthesize(cleanText, this.speakToken));
+    const combined = VoiceService.joinSpeech(this.takeHeld(), cleanText);
+    if (!force && VoiceService.spokenLength(combined) < VoiceService.MIN_SPEAK_CHARS) {
+      this.hold(combined);
+      return;
+    }
+    this.pushToQueue(combined);
+  }
+
+  private pushToQueue(text: string) {
+    this.queue.push(this.synthesize(text, this.speakToken));
     if (!this.isPlayingQueue) void this.playQueue(this.speakToken);
+  }
+
+  /** 先留著短句；時間到了還沒有下一句，就單獨唸出來 */
+  private hold(text: string) {
+    this.heldText = text;
+    if (this.heldTimer) clearTimeout(this.heldTimer);
+    const token = this.speakToken;
+    this.heldTimer = setTimeout(() => {
+      this.heldTimer = null;
+      if (token !== this.speakToken) return;
+      const t = this.takeHeld();
+      if (t) this.pushToQueue(t);
+    }, VoiceService.SHORT_HOLD_MS);
+  }
+
+  private takeHeld(): string {
+    if (this.heldTimer) {
+      clearTimeout(this.heldTimer);
+      this.heldTimer = null;
+    }
+    const t = this.heldText;
+    this.heldText = '';
+    return t;
+  }
+
+  /** 不含標點、空白、符號的字數 */
+  private static spokenLength(text: string) {
+    return text.replace(/[\s\p{P}\p{S}]/gu, '').length;
+  }
+
+  /** 合併兩句：前一句沒有句尾標點就補一個逗號，唸起來才會有停頓 */
+  private static joinSpeech(a: string, b: string) {
+    if (!a) return b;
+    return /[。！？!?…～~，,、♪]$/.test(a) ? `${a}${b}` : `${a}，${b}`;
   }
 
   // 濾水器：清空特殊符號、隱藏標記與網址
@@ -224,7 +155,7 @@ class VoiceService {
       const response = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, speed: this.speed }),
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`後端拒絕連線，狀態碼: ${response.status}`);
@@ -241,14 +172,59 @@ class VoiceService {
     }
   }
 
-  private playAudio(base64: string, token: number): Promise<void> {
+  /**
+   * 對嘴用：把同一段音檔另外解碼一次，算出每 20ms 的音量（不經過播放的路徑，分析失敗也只是嘴巴不動）
+   */
+  private async computeEnvelope(base64: string) {
+    try {
+      if (!this.audioCtx) {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        this.audioCtx = new AudioContextClass();
+      }
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const buf = await this.audioCtx.decodeAudioData(bytes.buffer);
+      const ch = buf.getChannelData(0);
+      const win = Math.max(1, Math.round(buf.sampleRate * VoiceService.ENVELOPE_STEP));
+      const data = new Float32Array(Math.ceil(ch.length / win));
+      for (let i = 0; i < data.length; i++) {
+        let sum = 0;
+        const end = Math.min(ch.length, (i + 1) * win);
+        for (let j = i * win; j < end; j++) sum += ch[j] * ch[j];
+        data[i] = Math.sqrt(sum / Math.max(1, end - i * win));
+      }
+      // 用第 90 百分位當「張到最大」的音量，每句話的大小聲不同也能對得上
+      const sorted = Array.from(data).sort((a, b) => a - b);
+      const peak = Math.max(sorted[Math.floor(sorted.length * 0.9)] || 0, 0.01);
+      return { data, step: VoiceService.ENVELOPE_STEP, peak };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 對嘴用：目前語音的音量（0 = 沒聲音，1 ≈ 這句話裡比較大聲的地方） */
+  public getMouthLevel(): number {
+    const audio = this.currentAudio;
+    const env = this.currentEnvelope;
+    if (!audio || !env || audio.paused) return 0;
+    const v = env.data[Math.floor(audio.currentTime / env.step)] ?? 0;
+    return Math.min(1.5, v / env.peak);
+  }
+
+  private async playAudio(base64: string, token: number): Promise<void> {
+    const envelope = await this.computeEnvelope(base64);
     return new Promise((resolve) => {
       if (token !== this.speakToken) return resolve();
       const audio = new Audio(`data:audio/wav;base64,${base64}`);
       audio.volume = this.volume;
       this.currentAudio = audio;
+      this.currentEnvelope = envelope;
       const done = () => {
-        if (this.currentAudio === audio) this.currentAudio = null;
+        if (this.currentAudio === audio) {
+          this.currentAudio = null;
+          this.currentEnvelope = null;
+        }
         resolve();
       };
       audio.onended = done;
@@ -278,6 +254,7 @@ class VoiceService {
 
   public stop() {
     this.speakToken++;
+    this.takeHeld();
     this.queue = [];
     this.isPlayingQueue = false;
     this.ttsAborts.forEach((c) => c.abort());

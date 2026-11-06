@@ -26,6 +26,9 @@ export interface ChatMessage {
   isRead?: boolean;
   isStreaming?: boolean; // AI 回覆還在逐字輸出中
   sticker?: string; // 貼圖訊息（名稱對應 src/services/replyRhythm.ts 的 STICKERS）
+  source?: 'line'; // 在 LINE 上的對話（只顯示在對話框，不存進桌寵的聊天紀錄）
+  image?: { url: string; link?: string; title?: string }; // 她真的上網找到的梗圖（content 放給她自己看的說明）
+  media?: { kind: 'image' | 'video'; thumb: string; name?: string; durationSec?: number }; // 主人傳的圖片 / 影片（只存縮圖）
 }
 
 export interface DiscoveredVideo {
@@ -67,6 +70,8 @@ export interface ExploreSettings {
   petInterests: string;
   greetOnReturn: boolean; // 開啟桌寵 / 離開回來時打招呼
   lateNightReminder: boolean; // 深夜提醒早點睡
+  hourlyChime: boolean; // 整點報時
+  stamina: 'off' | 'light' | 'normal'; // 體力系統：關閉 / 輕微 / 正常（陪聊太久、深夜會累）
   sources: Record<DiscoverySource, boolean>; // 各探索來源開關
   pttBoards: string; // 常逛的 PTT 看板，例如「C_Chat, Steam」
   bahamutBoards: string; // 常逛的巴哈哈啦板，例如「流亡黯道 18966、原神 36730」

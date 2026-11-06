@@ -7,6 +7,7 @@
  *      Bing「網頁搜尋」RSS 回傳的結果跟關鍵字無關（Instagram、購物網站…）不能用。
  *    - 巴哈的全站搜尋會被擋，只能逛「已知看板編號（bsn）」的看板 → 由設定面板提供看板清單。
  *    - Reddit 用機器人 User-Agent 會被 429，用一般瀏覽器字串的 RSS 才抓得到。
+ *    - Reddit API 需要審核，改用主人的「私人首頁 RSS」（.env 的 REDDIT_FRONTPAGE_RSS）讀主人自己的首頁。
  *    所有論壇頁面都有 10 分鐘快取；被 403 / 429 擋的網站暫停 15 分鐘，避免被封鎖。
  *  Phase 3 AI 篩選：先讓 Gemini 依喜好規劃搜尋關鍵字，再從候選中挑一篇最有趣的，
  *    依人設滑桿的語氣（server/persona.ts）寫推播與短評。
@@ -47,6 +48,8 @@ export interface ExploreInput {
   personality?: PersonalityConfig;
   petInterests?: string; // 設定面板「探索興趣」
   memoryInterests?: string[]; // 長期記憶裡的主人喜好
+  /** 她自己想逛（照她自己的興趣或隨便逛）：不參考主人的 Reddit 首頁和常逛的版 */
+  ownMode?: boolean;
   recentUrls?: string[]; // 最近推薦過的，避免重複
   sources?: Partial<Record<SourceKind, boolean>>; // 各來源開關（沒給 = 開）
   pttBoards?: string[]; // 常逛的 PTT 看板（英文板名）
@@ -245,6 +248,72 @@ async function redditHot(subreddit: string, limit: number): Promise<Candidate[]>
     .map((it) => ({ source: 'reddit' as const, title: it.title, url: it.link, snippet: `r/${sub} · ${cleanText(it.description, 180)}` }));
 }
 
+/* ── Reddit：主人自己的首頁（私人 RSS，不需要 Reddit API）──
+ * Reddit 的 API 現在要審核才能用，但「私人 RSS」還在：
+ * https://old.reddit.com/prefs/feeds/ 裡「your front page」那列的 RSS 連結（含私人 token），
+ * 放在 .env 的 REDDIT_FRONTPAGE_RSS。連結等於你的首頁鑰匙，所以只放 .env、log 也不印出來。
+ */
+function redditFrontPageUrl(): string | null {
+  const raw = (process.env.REDDIT_FRONTPAGE_RSS || '').trim();
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'https:' || !/(^|\.)reddit\.com$/i.test(u.hostname) || !u.searchParams.get('feed')) return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+const subredditOf = (link: string) => link.match(/reddit\.com\/r\/([A-Za-z0-9_]+)/i)?.[1] || '';
+
+async function redditFrontPage(): Promise<Candidate[]> {
+  const url = redditFrontPageUrl();
+  if (!url) return [];
+  let xml: string;
+  try {
+    xml = await fetchCached(url);
+  } catch (err: any) {
+    // 原本的錯誤訊息含網址（有私人 token），換成不含網址的說明
+    const e: any = new Error(
+      `讀不到你的 Reddit 首頁（${err?.status ? `HTTP ${err.status}` : '連線失敗'}），請檢查 .env 的 REDDIT_FRONTPAGE_RSS`
+    );
+    e.status = err?.status;
+    throw e;
+  }
+  return parseFeed(xml)
+    .filter((it) => /^https?:\/\//.test(it.link) && it.title.trim())
+    .map((it) => {
+      const sub = subredditOf(it.link);
+      return {
+        source: 'reddit' as const,
+        title: it.title,
+        url: it.link,
+        snippet: `${sub ? `r/${sub} · ` : ''}你的 Reddit 首頁 · ${cleanText(it.description, 160)}`,
+      };
+    });
+}
+
+/** 首頁文章裡跟這次主題有關的排前面；都無關就從最前面幾篇隨機挑，偶爾也聊聊你首頁上的別的東西 */
+function rankByTopic(items: Candidate[], words: Array<string | undefined>, limit: number): Candidate[] {
+  const keys = words
+    .flatMap((w) => String(w || '').toLowerCase().split(/[\s,，、/|]+/))
+    .filter((w) => w.length >= 2);
+  const scored = items.map((c, i) => {
+    const hay = `${c.title} ${c.snippet}`.toLowerCase();
+    return { c, i, s: keys.reduce((n, k) => n + (hay.includes(k) ? 1 : 0), 0) };
+  });
+  const hits = scored
+    .filter((x) => x.s > 0)
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .map((x) => x.c);
+  if (hits.length) return hits.slice(0, limit);
+  const top = items.slice(0, 10);
+  const out: Candidate[] = [];
+  while (top.length && out.length < limit) out.push(top.splice(Math.floor(Math.random() * top.length), 1)[0]);
+  return out;
+}
+
 async function hackerNews(query: string, limit: number): Promise<Candidate[]> {
   const url = `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=${limit * 2}`;
   const data = JSON.parse(await fetchText(url));
@@ -364,7 +433,7 @@ async function bahamutGnn(query: string, limit: number): Promise<Candidate[]> {
 }
 
 // 供測試 / 除錯使用
-export const sources = { searchYouTube, searchWikipedia, searchBingNews, redditHot, hackerNews, pttBoard, bahamutBoard, bahamutGnn };
+export const sources = { searchYouTube, searchWikipedia, searchBingNews, redditHot, redditFrontPage, hackerNews, pttBoard, bahamutBoard, bahamutGnn };
 
 /* ───────────────────────── 主流程 ───────────────────────── */
 
@@ -406,13 +475,24 @@ export async function runAutoExplore(
   }
   const pttBoards = input.pttBoards?.length ? input.pttBoards : DEFAULT_PTT_BOARDS;
   const bahaBoards = input.bahamutBoards?.length ? input.bahamutBoards : DEFAULT_BAHAMUT_BOARDS;
-  const subreddits = input.subreddits || [];
+  // 主人的 Reddit 首頁（有設定才讀）：裡面出現的 subreddit 也當成「主人常逛的」給 AI 參考
+  let frontPage: Candidate[] = [];
+  if (on('reddit') && redditFrontPageUrl() && !input.ownMode) {
+    try {
+      frontPage = await redditFrontPage();
+    } catch (err: any) {
+      log(`[探索] ${err?.message || err}`);
+    }
+  }
+  const subreddits = [
+    ...new Set([...(input.subreddits || []), ...frontPage.map((c) => subredditOf(c.url)).filter(Boolean)]),
+  ].slice(0, 30);
 
   // Phase 1→2：讓 Gemini 從喜好裡挑一個今天想逛的主題，並產生各來源的搜尋字
   const forumHints = [
     on('ptt') && `- PTT 看板（優先從這裡挑，也可以挑你很確定存在的其他 PTT 看板英文名稱）：${pttBoards.join('、')}`,
     on('bahamut') && `- 巴哈姆特哈啦板（只能從這份清單挑，用括號裡的編號；都跟主題無關就給空字串）：${bahaBoards.map((b) => `${b.name}(${b.bsn})`).join('、')}`,
-    on('reddit') && subreddits.length > 0 && `- 主人常逛的 subreddit（相關就優先用）：${subreddits.join('、')}`,
+    on('reddit') && subreddits.length > 0 && `- 主人常逛的 subreddit（${frontPage.length ? '包含主人 Reddit 首頁上的，' : ''}相關就優先用）：${subreddits.join('、')}`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -421,7 +501,7 @@ export async function runAutoExplore(
   try {
     plan = await generateJson(
       `你是桌寵貓娘「雙子星貓」，主人去忙了，你想趁空檔自己上網逛逛。
-以下是主人的喜好與你的個性設定（可能混雜性格描述，請只取出「興趣主題」）：
+${input.ownMode ? '這次你想逛「你自己」有興趣的東西（不是為了主人），以下是你的興趣方向' : '以下是主人的喜好與你的個性設定'}（可能混雜性格描述，請只取出「興趣主題」）：
 ${seeds || '（沒有特別設定，就挑遊戲、動漫、科技、迷因之類的）'}
 ${forumHints ? `\n可以逛的論壇：\n${forumHints}\n` : ''}
 ${
@@ -474,7 +554,24 @@ ${
         : bahamutGnn(`${q(plan.newsQuery)} ${topic}`, 2), // 沒有相關看板 → 看 GNN 有沒有相關新聞
     ]);
   }
-  if (on('reddit') && subreddit) jobs.push(['reddit', redditHot(subreddit, 3)]);
+  if (on('reddit') && (subreddit || frontPage.length)) {
+    jobs.push([
+      'reddit',
+      (async () => {
+        const fromFront = rankByTopic(frontPage, [topic, focus, subreddit, plan.youtubeQuery, plan.newsQuery], 2);
+        let hot: Candidate[] = [];
+        if (subreddit) {
+          try {
+            hot = await redditHot(subreddit, 3);
+          } catch (err: any) {
+            if (!fromFront.length) throw err;
+            log(`[探索] r/${subreddit} 讀取失敗，只用你的首頁：${err?.message || err}`);
+          }
+        }
+        return mergeUnique(fromFront, hot, 4);
+      })(),
+    ]);
+  }
   if (on('youtube')) jobs.push(['youtube', searchYouTube(q(plan.youtubeQuery), 3)]);
   if (on('news')) jobs.push(['news', searchBingNews(q(plan.newsQuery), 3)]);
   if (on('wiki')) jobs.push(['wiki', searchWikipedia(q(plan.wikiQuery), 2)]);

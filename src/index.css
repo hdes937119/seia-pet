@@ -124,3 +124,31 @@
 @media (prefers-reduced-motion: reduce) {
   [class*="pet-anim-"], [class*="pet-p-"], .pet-aura-rays { animation-duration: 0s !important; }
 }
+
+/* ── 躲起來時角落的呆毛 ── */
+.pet-ahoge-svg { transform-origin: 50% 100%; animation: pet-ahoge-sway 2.6s ease-in-out infinite; }
+.pet-ahoge:hover .pet-ahoge-svg { animation: pet-ahoge-wiggle 0.36s ease-in-out infinite; }
+@keyframes pet-ahoge-sway { 0%,100% { transform: rotate(-7deg); } 50% { transform: rotate(7deg); } }
+@keyframes pet-ahoge-wiggle { 0%,100% { transform: rotate(-15deg); } 50% { transform: rotate(15deg); } }
+/* 躲起來時舉的時間木牌 */
+.pet-sign-body { animation: pet-sign-bob 3.4s ease-in-out infinite; }
+@keyframes pet-sign-bob { 0%,100% { transform: rotate(-2deg); } 50% { transform: rotate(2deg); } }
+.pet-sign-colon { display: inline-block; animation: pet-sign-blink 2s steps(1, end) infinite; }
+@keyframes pet-sign-blink { 0%,60% { opacity: 1; } 60.01%,100% { opacity: 0.25; } }
+.pet-sign { opacity: 0.45; transition: opacity 0.25s; }
+.pet-sign-night { opacity: 0.28; }
+/* 滑鼠移到呆毛上 → 招牌變清楚、顯示日期（呆毛和招牌是相鄰的兄弟元素） */
+.pet-ahoge:hover ~ .pet-sign { opacity: 1; }
+.pet-ahoge:hover ~ .pet-sign .pet-sign-date { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .pet-ahoge-svg, .pet-sign-body, .pet-sign-colon { animation: none !important; } }
+
+/* 分圖層立繪的尾巴：繞著尾巴根部擺動（根部在畫布 55% / 76% 的位置，藏在裙襬後面） */
+.pet-tail { transform-origin: 55.25% 76.25%; animation: pet-tail-sway 3.2s ease-in-out infinite; }
+.pet-tail.pet-tail-fast { animation: pet-tail-wag 0.9s ease-in-out infinite; }
+.pet-tail.pet-tail-flick { animation: pet-tail-flick 1.6s ease-in-out infinite; }
+.pet-tail.pet-tail-droop { animation: pet-tail-droop 4.5s ease-in-out infinite; }
+@keyframes pet-tail-sway { 0%,100% { transform: rotate(-5deg); } 50% { transform: rotate(6deg); } }
+@keyframes pet-tail-wag { 0%,100% { transform: rotate(-8deg); } 50% { transform: rotate(10deg); } }
+@keyframes pet-tail-flick { 0%,70%,100% { transform: rotate(-2deg); } 78% { transform: rotate(12deg); } 86% { transform: rotate(-6deg); } }
+@keyframes pet-tail-droop { 0%,100% { transform: translateY(1.5%) rotate(10deg); } 50% { transform: translateY(1.5%) rotate(7deg); } }
+@media (prefers-reduced-motion: reduce) { .pet-tail { animation: none !important; } }

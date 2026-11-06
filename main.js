@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, powerMonitor, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, powerMonitor, shell, session } from 'electron';
 import path from 'path';
+import http from 'http';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -104,6 +105,246 @@ ipcMain.on('set-ignore-mouse', (event, ignore) => {
     win.setIgnoreMouseEvents(Boolean(ignore), { forward: true });
 });
 
+// YouTube 帳號：在桌寵自己的瀏覽器裡登入，點唱機（嵌入的 YouTube 播放器）就會用主人的帳號播放
+// （Premium 免廣告、播放紀錄記在主人帳號）。登入資訊存在桌寵自己的 Cookie，跟 Chrome 分開。
+const YT_LOGIN_URL =
+    'https://accounts.google.com/ServiceLogin?service=youtube&continue=' + encodeURIComponent('https://www.youtube.com/');
+const GOOGLE_DOMAIN_RE = /(^|\.)(youtube\.com|google\.com(\.tw)?)$/i;
+let ytLoginWindow = null;
+
+async function isYouTubeLoggedIn() {
+    const cookies = await session.defaultSession.cookies.get({ domain: 'youtube.com', name: 'LOGIN_INFO' });
+    return cookies.length > 0;
+}
+
+function notifyYouTubeLogin(loggedIn) {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('youtube-login-changed', Boolean(loggedIn));
+}
+
+// 西雅工坊的作品：開成獨立、可調整大小的視窗（沙盒、沒有 preload、不能導到別的地方）
+const workWindows = new Map();
+ipcMain.handle('open-workshop-work', (_event, id, entry, title) => {
+    const workId = String(id || '');
+    const file = String(entry || 'index.html');
+    if (!/^w-[\d-]+$/.test(workId) || file.includes('..') || /^[\\/]/.test(file)) return false;
+    const existing = workWindows.get(workId);
+    if (existing && !existing.isDestroyed()) {
+        existing.focus();
+        return true;
+    }
+    const prefix = `${APP_URL}/api/workshop/${workId}/files/`;
+    const win = new BrowserWindow({
+        width: 560,
+        height: 600,
+        minWidth: 240,
+        minHeight: 240,
+        title: `西雅的工坊：${String(title || '作品').slice(0, 30)}`,
+        autoHideMenuBar: true,
+        backgroundColor: '#ffffff',
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    win.loadURL(prefix + file.split('/').map(encodeURIComponent).join('/'));
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    win.webContents.on('will-navigate', (event, url) => {
+        if (!url.startsWith(prefix)) event.preventDefault();
+    });
+    // 標題固定用我們給的，不讓作品自己改
+    win.on('page-title-updated', (event) => event.preventDefault());
+    win.on('closed', () => workWindows.delete(workId));
+    workWindows.set(workId, win);
+    return true;
+});
+
+// 西雅「試玩」自己的工坊作品：在看不見的視窗裡，用跟主人打開時一樣的網址和安全限制載入，
+// 截三張圖（剛打開、亂點亂按之後、再等一下）、收集錯誤訊息，讓她用眼睛檢查，而不是只讀原始碼。
+// 只聽 127.0.0.1，要帶 X-Gemini-Pet 標頭、不能有 Origin（瀏覽器網頁叫不動），只收作品 id，不收任意網址。
+const PLAYTEST_PORT = Number(process.env.PLAYTEST_PORT) || 3002;
+let playtestBusy = false;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function playtestWork(workId, file) {
+    const prefix = `${APP_URL}/api/workshop/${workId}/files/`;
+    const url = prefix + file.split('/').map(encodeURIComponent).join('/');
+    const W = 400;
+    const H = 400;
+    const win = new BrowserWindow({
+        width: W,
+        height: H,
+        useContentSize: true,
+        show: false,
+        paintWhenInitiallyHidden: true,
+        backgroundColor: '#ffffff',
+        webPreferences: {
+            offscreen: true,
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            partition: 'seia-playtest',
+            backgroundThrottling: false,
+        },
+    });
+    const wc = win.webContents;
+    const logs = [];
+    const push = (level, text) => {
+        if (logs.length < 30) logs.push({ level, text: String(text || '').slice(0, 300) });
+    };
+    try {
+        wc.setAudioMuted(true);
+        wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+        wc.on('will-navigate', (event, u) => {
+            if (!u.startsWith(prefix)) event.preventDefault();
+        });
+        wc.on('console-message', (e, lvl, msg) => {
+            // Electron 新版只給一個 event（level 是字串），舊版是 (event, level 數字, message)
+            const raw = e && e.level !== undefined ? e.level : lvl;
+            const level = typeof raw === 'number' ? ['debug', 'info', 'warning', 'error'][raw] || 'info' : String(raw);
+            if (level === 'warning' || level === 'error') push(level, e && e.message !== undefined ? e.message : msg);
+        });
+        wc.on('did-fail-load', (_e, code, desc) => push('error', `頁面載入失敗：${desc}（${code}）`));
+        wc.on('render-process-gone', (_e, d) => push('error', `頁面當掉了：${d && d.reason}`));
+
+        await Promise.race([wc.loadURL(url), sleep(8000)]);
+        await sleep(1500);
+        const shot = async () => {
+            const img = await wc.capturePage();
+            return img.isEmpty() ? '' : img.toPNG().toString('base64');
+        };
+        const shots = [];
+        shots.push(await shot());
+
+        // 像第一次玩的人：點畫面上幾個地方、拖一下（拉桿）、按幾個常用鍵
+        const pts = [
+            [0.5, 0.5], [0.5, 0.75], [0.5, 0.85], [0.25, 0.5], [0.75, 0.5], [0.5, 0.3], [0.3, 0.7], [0.7, 0.7], [0.5, 0.6],
+        ];
+        for (const [fx, fy] of pts) {
+            const x = Math.round(W * fx);
+            const y = Math.round(H * fy);
+            wc.sendInputEvent({ type: 'mouseMove', x, y });
+            wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+            wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+            await sleep(250);
+        }
+        for (const fy of [0.6, 0.75, 0.9]) {
+            const y = Math.round(H * fy);
+            wc.sendInputEvent({ type: 'mouseDown', x: Math.round(W * 0.3), y, button: 'left', clickCount: 1 });
+            for (let i = 1; i <= 5; i++) {
+                wc.sendInputEvent({ type: 'mouseMove', x: Math.round(W * (0.3 + i * 0.12)), y, button: 'left' });
+                await sleep(40);
+            }
+            wc.sendInputEvent({ type: 'mouseUp', x: Math.round(W * 0.9), y, button: 'left', clickCount: 1 });
+        }
+        for (const key of ['Space', 'Enter', 'Right', 'Left', 'Up', 'Down']) {
+            wc.sendInputEvent({ type: 'keyDown', keyCode: key });
+            wc.sendInputEvent({ type: 'keyUp', keyCode: key });
+            await sleep(150);
+        }
+        await sleep(600);
+        shots.push(await shot());
+        await sleep(2500);
+        shots.push(await shot());
+
+        let text = '';
+        try {
+            text = String(await Promise.race([wc.executeJavaScript('document.body ? document.body.innerText : ""', true), sleep(2000).then(() => '')])).slice(0, 800);
+        } catch {
+            // 拿不到文字也沒關係
+        }
+        return { ok: true, shots: shots.filter(Boolean), logs, text };
+    } finally {
+        if (!win.isDestroyed()) win.destroy();
+    }
+}
+
+function startPlaytestServer() {
+    const srv = http.createServer((req, res) => {
+        const reply = (code, obj) => {
+            res.writeHead(code, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(obj));
+        };
+        if (req.method !== 'POST' || req.url !== '/playtest' || req.headers['x-gemini-pet'] !== '1' || req.headers.origin) return reply(403, { ok: false });
+        let body = '';
+        req.on('data', (c) => {
+            body += c;
+            if (body.length > 2000) req.destroy();
+        });
+        req.on('end', async () => {
+            let id = '';
+            let entry = 'index.html';
+            try {
+                const j = JSON.parse(body || '{}');
+                id = String(j.id || '');
+                entry = String(j.entry || 'index.html');
+            } catch {
+                return reply(400, { ok: false });
+            }
+            if (!/^w-[\d-]+$/.test(id) || entry.includes('..') || /^[\\/]/.test(entry)) return reply(400, { ok: false });
+            if (playtestBusy) return reply(409, { ok: false, reason: 'busy' });
+            playtestBusy = true;
+            try {
+                reply(200, await playtestWork(id, entry));
+            } catch (err) {
+                reply(500, { ok: false, reason: String((err && err.message) || err).slice(0, 200) });
+            } finally {
+                playtestBusy = false;
+            }
+        });
+    });
+    srv.on('error', (err) => console.log(`[試玩] ⚠️ 開不了 port ${PLAYTEST_PORT}：${err.message}`));
+    srv.listen(PLAYTEST_PORT, '127.0.0.1', () => console.log(`[試玩] 西雅試玩作品用的通道已開（127.0.0.1:${PLAYTEST_PORT}）`));
+}
+
+ipcMain.handle('youtube-login-status', () => isYouTubeLoggedIn());
+
+ipcMain.handle('youtube-login', () => {
+    if (ytLoginWindow && !ytLoginWindow.isDestroyed()) {
+        ytLoginWindow.focus();
+        return;
+    }
+    ytLoginWindow = new BrowserWindow({
+        width: 480,
+        height: 720,
+        title: '登入 YouTube',
+        autoHideMenuBar: true,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    ytLoginWindow.loadURL(YT_LOGIN_URL);
+    // Google 登入流程裡的新視窗留在這個登入視窗；其他網站交給預設瀏覽器
+    ytLoginWindow.webContents.setWindowOpenHandler(({ url }) => {
+        let host = '';
+        try { host = new URL(url).hostname; } catch { /* ignore */ }
+        if (GOOGLE_DOMAIN_RE.test(host)) ytLoginWindow?.loadURL(url);
+        else if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+        return { action: 'deny' };
+    });
+    // 登入完成會跳回 YouTube 首頁 → 確認有登入就自動關窗
+    ytLoginWindow.webContents.on('did-navigate', async (_e, url) => {
+        if (/^https:\/\/(www\.|m\.)?youtube\.com\//i.test(url) && (await isYouTubeLoggedIn())) {
+            if (ytLoginWindow && !ytLoginWindow.isDestroyed()) ytLoginWindow.close();
+        }
+    });
+    ytLoginWindow.on('closed', async () => {
+        ytLoginWindow = null;
+        notifyYouTubeLogin(await isYouTubeLoggedIn());
+    });
+});
+
+// 登出：只清掉桌寵這邊的 Google / YouTube Cookie，不影響 Chrome
+ipcMain.handle('youtube-logout', async () => {
+    const ses = session.defaultSession;
+    const all = await ses.cookies.get({});
+    await Promise.all(
+        all
+            .filter((ck) => GOOGLE_DOMAIN_RE.test(ck.domain.replace(/^\./, '')))
+            .map((ck) =>
+                ses.cookies
+                    .remove(`http${ck.secure ? 's' : ''}://${ck.domain.replace(/^\./, '')}${ck.path}`, ck.name)
+                    .catch(() => {})
+            )
+    );
+    notifyYouTubeLogin(false);
+    return false;
+});
+
 // 語音輸入全域熱鍵：就算正在打遊戲（桌寵沒有焦點）也能按。
 // 預設 Ctrl+Alt+V，可用環境變數 VOICE_HOTKEY 改，例如 VOICE_HOTKEY=F8
 const VOICE_HOTKEY = process.env.VOICE_HOTKEY || 'Ctrl+Alt+V';
@@ -130,6 +371,7 @@ app.whenReady().then(() => {
     // 保險：視窗失去焦點時一定停止拖曳
     mainWindow.on('blur', stopWindowDrag);
     registerVoiceHotkey();
+    startPlaytestServer();
 });
 
 app.on('will-quit', () => {

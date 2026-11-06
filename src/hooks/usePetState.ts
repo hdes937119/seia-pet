@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { PetEmotionId, PetModeId, PetStateId } from '../components/pet/petStates';
-import { PET_EMOTIONS } from '../components/pet/petStates';
+import type { PetActId, PetEmotionId, PetModeId, PetStateId } from '../components/pet/petStates';
+import { PET_ACTS, PET_EMOTIONS } from '../components/pet/petStates';
 
 /**
  * 桌寵狀態機。顯示優先順序：
- *   預覽（手動挑選） > 摸頭 > 情緒（幾秒後自動結束） > 視窗偵測模式 > 待機
+ *   預覽（手動挑選） > 摸頭 > 微表情（開口前幾秒） > 情緒（幾秒後自動結束） > 運作模式 > 待機
  * 閒置一段時間沒事做時，會隨機冒出一個小情緒，讓她看起來是活的。
  */
 
@@ -20,12 +20,15 @@ const IDLE_EMOTIONS: Record<'good' | 'normal' | 'bad', PetEmotionId[]> = {
   bad: ['sad', 'confused', 'sad', 'angry'],
 };
 
-type ScreenMode = Extract<PetModeId, 'gaming' | 'gemini_web' | 'line'> | null;
+type ScreenMode = Extract<PetModeId, 'gaming' | 'gemini_web' | 'line' | 'eating' | 'tired' | 'exhausted' | 'rainy'> | null;
+const ACT_MS = 3500;
 
 export function usePetState(screenMode: ScreenMode, mood = 0) {
   const moodRef = useRef(mood);
   moodRef.current = mood;
   const [emotion, setEmotion] = useState<PetEmotionId | null>(null);
+  const [act, setAct] = useState<PetActId | null>(null);
+  const actTimer = useRef<number | undefined>(undefined);
   const [patting, setPatting] = useState(false);
   const [preview, setPreview] = useState<PetStateId | null>(null);
 
@@ -45,6 +48,14 @@ export function usePetState(screenMode: ScreenMode, mood = 0) {
     window.clearTimeout(emotionTimer.current);
     setEmotion(value as PetEmotionId);
     emotionTimer.current = window.setTimeout(() => setEmotion(null), ms);
+  }, []);
+
+  /** 微表情：她開口前的一瞬間反應（白眼、嘆氣、心虛、害羞、偷笑） */
+  const triggerAct = useCallback((value: string | null | undefined, ms = ACT_MS) => {
+    if (!value || !(PET_ACTS as string[]).includes(value)) return;
+    window.clearTimeout(actTimer.current);
+    setAct(value as PetActId);
+    actTimer.current = window.setTimeout(() => setAct(null), ms);
   }, []);
 
   const startPatting = useCallback(() => {
@@ -90,11 +101,12 @@ export function usePetState(screenMode: ScreenMode, mood = 0) {
       window.clearTimeout(emotionTimer.current);
       window.clearTimeout(patTimer.current);
       window.clearTimeout(previewTimer.current);
+      window.clearTimeout(actTimer.current);
     },
     []
   );
 
-  const state: PetStateId = preview ?? (patting ? 'patting' : emotion ?? screenMode ?? 'idle');
+  const state: PetStateId = preview ?? (patting ? 'patting' : act ?? emotion ?? screenMode ?? 'idle');
 
-  return { state, triggerEmotion, startPatting, stopPatting, previewState, markActive };
+  return { state, triggerEmotion, triggerAct, startPatting, stopPatting, previewState, markActive };
 }

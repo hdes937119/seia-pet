@@ -10,7 +10,7 @@ import { useEffect, useRef } from 'react';
  * 同類招呼至少間隔 20 分鐘，避免一直講話。
  */
 
-export type GreetingReason = 'startup' | 'return' | 'late_night';
+export type GreetingReason = 'startup' | 'return' | 'late_night' | 'hourly';
 
 interface Options {
   greetOnReturn: boolean;
@@ -28,6 +28,8 @@ const AWAY_THRESHOLD_SEC = 10 * 60; // 閒置超過 10 分鐘才算「離開」
 const BACK_SEC = 30; // 閒置時間掉回 30 秒內 = 回來了
 const STARTUP_GAP_MIN = 60;
 const MIN_GAP_MS = 20 * 60 * 1000;
+// 每分鐘把閒置秒數告訴後端（河木鎮：判斷主人在不在、西雅要不要去上班）
+const PRESENCE_EVERY_MS = 60_000;
 
 function readNumber(key: string): number | null {
   try {
@@ -61,6 +63,7 @@ export function useCompanionGreeting({ greetOnReturn, lateNightReminder, onGreet
     let lastGreetAt = 0;
     let maxIdleSec = 0; // 這段離開期間觀察到的最長閒置時間
     let lastDomActivity = Date.now();
+    let lastPresenceAt = 0;
 
     const greet = (reason: GreetingReason, awayMinutes: number, awaySince: number) => {
       if (Date.now() - lastGreetAt < MIN_GAP_MS) return;
@@ -96,6 +99,15 @@ export function useCompanionGreeting({ greetOnReturn, lateNightReminder, onGreet
           : (Date.now() - lastDomActivity) / 1000;
       } catch {
         return;
+      }
+
+      if (Date.now() - lastPresenceAt >= PRESENCE_EVERY_MS) {
+        lastPresenceAt = Date.now();
+        fetch('/api/presence', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idleSec }),
+        }).catch(() => {});
       }
 
       const active = idleSec < BACK_SEC;
