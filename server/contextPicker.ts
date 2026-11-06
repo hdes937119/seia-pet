@@ -29,6 +29,7 @@ export const PICKABLE_BLOCKS = [
   '研究',
   '委託',
   '提案',
+  '工具箱',
   '額度',
 ];
 

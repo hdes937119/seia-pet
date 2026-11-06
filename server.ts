@@ -59,6 +59,8 @@ import { isRainingNow, quirkPrompt } from './server/quirks';
 import { pickContext, type PickResult } from './server/contextPicker';
 import { repeatedPhrases, repeatPrompt, repeatHits, cleanReply } from './server/repeatGuard';
 import { createBrowser } from './server/browser';
+import { CHAT_TOOL_DECLS, runToolLoopStream, runToolLoop, type ToolRunner } from './server/chatTools';
+import { createToolbox } from './server/toolbox';
 import { createHostActions, type ActionPlan } from './server/hostActions';
 import { createCommissions, defaultBudget, APPROVE_RE, NEGATE_RE, STOP_RE, PAUSE_RE, RESUME_RE, type Commission, type ProjectJob } from './server/commission';
 
@@ -676,7 +678,10 @@ async function pickChatContext(
     userText: ut,
     recent,
     gaming,
-    force: cm || (/委託/.test(ut) && commissions.open().length) ? ['委託'] : [],
+    force: [
+      ...(cm || (/委託/.test(ut) && commissions.open().length) ? ['委託'] : []),
+      ...(toolbox.mentioned(ut) || /工具/.test(ut) ? ['工具箱'] : []),
+    ],
     generate: async (prompt, signal) => {
       const sig = outer ? (AbortSignal as any).any([signal, outer]) : signal;
       const { response } = await usageTask('context-pick', () =>
@@ -1028,6 +1033,13 @@ function describeMyRecentLines(hours = 6, n = 10): string {
   return `【你最近幾小時自己說過的話（不要重複同樣的梗、比喻、提醒或開頭；同一件事想再說就換個說法，或乾脆不說）】\n${lines.map((t) => `- ${t.slice(0, 80)}`).join('\n')}`;
 }
 
+/** 聊天用工具呼叫（11/6）；.env 設 CHAT_TOOLS=false 退回隱藏標記 */
+const chatToolsOn = () => process.env.CHAT_TOOLS !== 'false';
+const RULE10_MARKER = `10. **工坊**：只有主人「明確要你」在工坊做一個小遊戲、小工具或小動畫（例如「幫我做個打地鼠」「去工坊做一個…」）時，才在文末加隱藏標記 <!--WORK:{"title":"作品名（12 字內）","brief":"寫給工坊助手的具體說明：做成什麼樣子、怎麼玩、你想加的小細節（60～150 字）"}-->，回覆裡說你要去工坊做了。主人只是聊到、問你會不會，或是你自己想做，都不要加。工坊只能做單一網頁的小作品。畫圖（配件、表情、貼圖）目前不能從聊天直接叫你畫，但你有自己的時間時可以自己決定要不要畫；安裝軟體或插件目前都不行，主人要的是這些就照實說。背景資料寫工坊現在不能開工時，也照實說，不要加標記。`;
+const RULE12_MARKER = `12. **主人的委託**：主人明確要你做一個比較大、要花好幾天慢慢做的東西（例如「幫我做一個 PoE 通貨漲跌系統」「委託你做一個…工具」），不是單一網頁小作品時，在文末加 <!--COMMISSION:{"title":"委託名稱（12 字內）","direction":"主人要的東西，照主人的話寫清楚（目標、成品樣子、用途）","constraints":"主人說的限制（沒有就空字串）"}-->，回覆裡說你會先寫計畫給他看（不要假裝已經開始做）。主人只是聊到、問你做不做得到，不要加。背景資料有【主人的委託】時：主人對某個委託給意見、回覆你的報告，就在文末加 <!--CFEEDBACK:{"id":"委託 id","decision":"approve、changes、note、pause、resume 或 drop","note":"主人的意見，照他的意思寫清楚"}-->：approve＝主人明確同意正在等他回覆的計畫或階段成果；changes＝主人要你改；note＝其他意見；pause／resume／drop＝主人明確說暫停、繼續、不做了。不確定主人是不是同意，就用問的，不要加 approve。`;
+const RULE10_TOOLS = `10. **你的工具**：你手上有工具——開工坊小作品（start_workshop_work）、開委託（create_commission）、回覆委託（reply_commission）、查委託進度（commission_status）、在主人電腦上做事的行動提案（plan_actions）、看和跑你自己做的工具（my_tools、run_my_tool）。看主人這句話需不需要，自己決定用不用、用哪個；大部分聊天都不需要工具。不確定主人是不是要你動手，就先用一句話問他。用工具要等的（開委託、跑工具），先簡短說一聲再用。用完照工具回來的結果說，不要說還沒發生的事，也不要把工具回來的整段內容照貼。畫圖目前不能從聊天直接叫你畫；安裝軟體要用行動提案、要主人在電腦前同意。不要再寫 WORK、COMMISSION、CFEEDBACK 這些舊的隱藏標記。`;
+const RULE12_TOOLS = `12. **委託的同意**：主人要明確說同意、或已經從你列的選項裡選好，才用 reply_commission 的 approve；程式也會再核對主人的原話。主人還在挑、還在問，就繼續聊或列選項，不要急著開委託或同意。`;
+
 function buildSystemPrompt(
   personality: PersonalityConfig,
   permanentMemories: Array<{ keyword: string; category: string; notes?: string }> = [],
@@ -1101,6 +1113,7 @@ function buildSystemPrompt(
     自己的時間: autonomy.describeForChat(),
     研究: research.describeForChat(),
     提案: hostActions.describeForChat(),
+    工具箱: toolbox.describe(5),
     委託: commissions.describeForChat(String(recentText || '').split('\n').pop() || '', (pid) => research.recentEntries(pid, 4)),
     額度: usage.describeForChat(),
     畫面: activityContext,
@@ -1131,9 +1144,9 @@ function buildSystemPrompt(
 8. **不准沒根據地指責主人的習慣**：除非背景資料裡有、或主人自己說過，不要說「你又熬夜」「你總是不吃飯」「你老是在打電動」這種話；不確定就用問的（「今天還好嗎？」），不要替主人編造習慣。
 9. **背景資料不是主人說的話**：主人最新一則訊息的最前面，會有系統自動附上的 <!--CONTEXT-->…<!--/CONTEXT--> 區塊（時間、記憶、河木鎮、你的狀態…），那是給你參考的資料，不是主人講的；不要回應它本身，也不要把這些標記寫進回覆。
 
-10. **工坊**：只有主人「明確要你」在工坊做一個小遊戲、小工具或小動畫（例如「幫我做個打地鼠」「去工坊做一個…」）時，才在文末加隱藏標記 <!--WORK:{"title":"作品名（12 字內）","brief":"寫給工坊助手的具體說明：做成什麼樣子、怎麼玩、你想加的小細節（60～150 字）"}-->，回覆裡說你要去工坊做了。主人只是聊到、問你會不會，或是你自己想做，都不要加。工坊只能做單一網頁的小作品。畫圖（配件、表情、貼圖）目前不能從聊天直接叫你畫，但你有自己的時間時可以自己決定要不要畫；安裝軟體或插件目前都不行，主人要的是這些就照實說。背景資料寫工坊現在不能開工時，也照實說，不要加標記。
+${chatToolsOn() ? RULE10_TOOLS : RULE10_MARKER}
 11. **不要重複自己**：前面對話裡你自己用過的梗、比喻、提醒（例如叫主人去睡、某個綽號），這次不要再用；同一件事想再說就換個說法，或乾脆不說。
-12. **主人的委託**：主人明確要你做一個比較大、要花好幾天慢慢做的東西（例如「幫我做一個 PoE 通貨漲跌系統」「委託你做一個…工具」），不是單一網頁小作品時，在文末加 <!--COMMISSION:{"title":"委託名稱（12 字內）","direction":"主人要的東西，照主人的話寫清楚（目標、成品樣子、用途）","constraints":"主人說的限制（沒有就空字串）"}-->，回覆裡說你會先寫計畫給他看（不要假裝已經開始做）。主人只是聊到、問你做不做得到，不要加。背景資料有【主人的委託】時：主人對某個委託給意見、回覆你的報告，就在文末加 <!--CFEEDBACK:{"id":"委託 id","decision":"approve、changes、note、pause、resume 或 drop","note":"主人的意見，照他的意思寫清楚"}-->：approve＝主人明確同意正在等他回覆的計畫或階段成果；changes＝主人要你改；note＝其他意見；pause／resume／drop＝主人明確說暫停、繼續、不做了。不確定主人是不是同意，就用問的，不要加 approve。
+${chatToolsOn() ? RULE12_TOOLS : RULE12_MARKER}
 
 ${DYNAMIC_MARK}
 ${Object.values(blocks).filter(Boolean).join('\n')}`;
@@ -1489,13 +1502,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     let firstTokenMs: number | null = null;
     let rawHead = '';
     let actChecked = false;
-    const { usedModel, fullText } = await streamSmartContent(
-      ai,
-      formattedContents,
-      { systemInstruction: chatSystemInstruction, temperature: 0.9 },
-      chatModelFor(String(lastUserText), preferredModel, media.length > 0 || Boolean(search)),
-      abort.signal,
-      (text) => {
+    const onChatText = (text: string) => {
         if (firstTokenMs === null) firstTokenMs = Date.now() - startTime;
         // 微表情標記在最開頭：一收到就讓桌寵先做表情（不用等整句講完）
         if (!actChecked) {
@@ -1511,8 +1518,26 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         }
         const visible = filter.push(text);
         if (visible) send('delta', { text: visible });
-      }
-    );
+    };
+    const chatModel = chatModelFor(String(lastUserText), preferredModel, media.length > 0 || Boolean(search));
+    const recentForTools = allMsgs
+      .slice(-7)
+      .map((m: any) => `${m?.role === 'user' ? '主人' : '西雅'}：${cleanReply(String(m?.content || '')).replace(/\s+/g, ' ').slice(0, 200)}`)
+      .join('\n');
+    const { usedModel, fullText, calls: toolCalls } = chatToolsOn()
+      ? await streamChatWithTools(
+          ai,
+          formattedContents,
+          { systemInstruction: chatSystemInstruction, temperature: 0.9 },
+          chatModel,
+          abort.signal,
+          onChatText,
+          chatToolRunner({ via: 'desktop', userText: String(lastUserText), recent: recentForTools })
+        )
+      : {
+          ...(await streamSmartContent(ai, formattedContents, { systemInstruction: chatSystemInstruction, temperature: 0.9 }, chatModel, abort.signal, onChatText)),
+          calls: [] as string[],
+        };
 
     const { cleanText, detectedKeywords } = extractKeywords(fullText);
     {
@@ -1543,7 +1568,8 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     );
     presence.markNightAnnounced(cleanText);
     diary.markDreamIfMentioned(cleanText);
-    writebackChat(String(lastUserText), cleanText);
+    // 委託、工具的內容不寫進河木鎮設定（11/6 實測：委託的點子被記成鎮上的設定）
+    if (!toolCalls.some((n) => /commission|tool|actions|workshop/.test(n))) writebackChat(String(lastUserText), cleanText);
     // 陪聊會累：訊息越長、要看畫面、要上網找東西，耗越多
     stamina.spend(String(lastUserText), (search ? 2 : 0) + (latestScreenshot ? 0.5 : 0));
     // 主人來陪她聊天 → 心情與好感度更新（也會參考她這句話的情緒）
@@ -2604,6 +2630,16 @@ const RESEARCH_TOOLS = [
     },
   },
   {
+    name: 'my_tools',
+    description: '看你的工具箱：你自己做出來、可以直接跑的工具（不花 AI 額度）。',
+    parametersJsonSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'run_my_tool',
+    description: '跑你工具箱裡的一個工具，拿到它的報告或輸出（不花 AI 額度，要等幾十秒）。tool＝工具 id 或名稱；note＝（可省略）用完對這個工具的一句心得。',
+    parametersJsonSchema: { type: 'object', properties: { tool: { type: 'string' }, note: { type: 'string' } }, required: ['tool'] },
+  },
+  {
     name: 'request_folder',
     description: '請主人給你一個電腦上的資料夾（例如主人的照片、跑步紀錄、文件）。what＝想要什麼樣的資料夾（你不知道主人的路徑，用描述的）；purpose＝要拿來做什麼；mode：read＝只讀、add＝還要放新檔案進去給主人。主人在設定面板同意之後，開工時（start_experiment 或 lab_run 的 folders）才能用，一律唯讀掛進工坊。系統資料夾、主人的整個使用者資料夾、AppData 之類的一定不會給。',
     parametersJsonSchema: {
@@ -2696,6 +2732,14 @@ async function runResearchTool(p: Project, name: string, args: any): Promise<str
       if (!r.ok) return `實驗室現在不能用：${r.reason}`;
       research.append(p.id, 'try', `在工坊實驗室開始執行「${String(a.title).slice(0, 30)}」：${String(a.task).slice(0, 300)}`);
       return '實驗室開始跑了，大概要幾分鐘。結果會自動記進筆記，下一輪看得到。';
+    }
+    case 'my_tools':
+      return toolbox.describe(20) || '工具箱還是空的（委託做出能直接執行的工具之後，就會出現在這裡）。';
+    case 'run_my_tool': {
+      const out = await toolbox.run(String(a.tool || ''), `研究「${p.title}」`);
+      if (a.note) toolbox.setNote(String(a.tool || ''), String(a.note));
+      research.append(p.id, 'try', `用工具箱的「${String(a.tool || '').slice(0, 30)}」：${out.replace(/\s+/g, ' ').slice(0, 300)}`);
+      return out;
     }
     case 'browse': {
       const r = await seiaBrowser.run(String(a.goal || ''), String(a.url || ''), `研究「${p.title}」`);
@@ -2797,7 +2841,7 @@ ${research.recentEntries(p.id, 8).join('\n') || '（沒有）'}
 你的研究筆記本目錄：
 ${research.indexText() || '（只有這個題目）'}
 ${lessons ? `\n你以前學到的：\n${lessons}` : ''}
-${!opts.extraOpening && folders.describeForSeia() ? `\n${folders.describeForSeia()}` : ''}${hostActions.describeForSeia() ? `\n${hostActions.describeForSeia()}` : ''}${opts.extraOpening ? `\n${opts.extraOpening}\n` : ''}
+${!opts.extraOpening && folders.describeForSeia() ? `\n${folders.describeForSeia()}` : ''}${hostActions.describeForSeia() ? `\n${hostActions.describeForSeia()}` : ''}${toolbox.describe() ? `\n${toolbox.describe()}` : ''}${opts.extraOpening ? `\n${opts.extraOpening}\n` : ''}
 開始這一輪吧。`;
     const contents: any[] = [{ role: 'user', parts: [{ text: opening }] }];
     for (let step = 0; step < RESEARCH_MAX_STEPS; step++) {
@@ -3130,6 +3174,221 @@ const commissions = createCommissions(DATA_DIR, {
   log: (m) => console.log(m),
 });
 const commissionTask = (c: Commission) => `commission:${c.id}`;
+
+/* ===== 她的工具箱（server/toolbox.ts，11/6）：委託做出來的工具，她自己也能拿來用 ===== */
+const toolbox = createToolbox(
+  DATA_DIR,
+  {
+    list: () =>
+      commissions.withTools().map((c) => ({
+        id: c.id,
+        title: c.tool!.title,
+        desc: c.tool!.desc,
+        from: `委託「${c.title}」`,
+        report: c.tool!.report,
+        page: c.tool!.page,
+      })),
+    run: async (id) => {
+      const c = commissions.get(id);
+      if (!c?.tool) return { ok: false, reason: '找不到這個工具' };
+      const r = await commissions.runTool(c, 'seia');
+      if (!r.ok || !r.run) return { ok: false, reason: r.reason || '跑不起來' };
+      return {
+        ok: r.run.ok,
+        reason: r.run.ok ? '' : `結束碼 ${r.run.code}`,
+        output: r.run.output,
+        report: c.tool.report ? commissions.readWs(c, c.tool.report, 6000) : '',
+      };
+    },
+  },
+  (m) => console.log(m)
+);
+
+/** 主人的話看起來是在選（「我選 1 和 A」「就第二個」）或答應 */
+const SELECT_RE = /選|就要|我要|決定|就用|就這|第.個|^[\s0-9A-Za-z一二三四五六、,，和跟還有以及]{1,16}$/;
+
+/** 聊天時她可以用的工具（server/chatTools.ts 的宣告），在這裡真的執行 */
+function chatToolRunner(ctx: { via: 'desktop' | 'line'; userText: string; recent: string }): ToolRunner {
+  const ut = cleanReply(ctx.userText);
+  return async (name, a) => {
+    a = a || {};
+    switch (name) {
+      case 'start_workshop_work': {
+        const title = String(a.title || '').trim();
+        const brief = String(a.brief || '').trim();
+        if (!title || !brief) return '少了作品名或說明，沒開工。';
+        if (usage.overBudget()) return '今天的額度用完了，工坊明天再開。照實跟主人說。';
+        const r = workshop.start({ title, brief, ideaBy: 'master' }, onWorkDone);
+        if (!r.ok) return `工坊現在不能開工：${r.reason}。照實跟主人說。`;
+        console.log(`[工坊] 主人在${ctx.via === 'line' ? ' LINE ' : '聊天'}裡叫她開工：${title}`);
+        return `開工了：「${r.work.title}」，大概要幾分鐘；做好會在設定面板等主人看。`;
+      }
+      case 'create_commission': {
+        if (process.env.COMMISSION === 'false') return '主人把委託功能關掉了（COMMISSION=false），開不了。';
+        const title = String(a.title || '').trim();
+        const direction = String(a.direction || '').trim();
+        if (!title || !direction) return '少了委託名稱或內容，沒開。';
+        const dup = commissions.open().find((c) => Date.now() - c.createdAt < 15 * 60_000);
+        if (dup) {
+          commissions.addFeedback(dup, `${direction}${a.constraints ? `（限制：${a.constraints}）` : ''}`, ctx.via);
+          return `15 分鐘內剛開過「${dup.title}」（${dup.id}），這次的內容記成它的補充意見，沒有另外開新的。`;
+        }
+        if (commissions.open().length >= 5) return '進行中的委託已經有 5 個，先結束或取消一個才能開新的。';
+        const c = commissions.create({ title, direction, constraints: String(a.constraints || '') });
+        commissions.addFeedback(c, `（主人原話）${ut.slice(0, 500)}`, ctx.via);
+        const r = await usageTask(commissionTask(c), () => planCommission(c, { notify: false, context: ctx.recent }));
+        if (!r.ok) return `委託建立了（${c.id}），但計畫這次沒寫成（${r.reason}）；程式幾分鐘後會自動再寫一次、寫好會通知主人。照實跟主人說。`;
+        const stages = c.stages.map((s, i) => `${i + 1}. ${s.title}：${s.goal}`).join('\n');
+        return `委託建立了（${c.id}），計畫寫好了，在等主人同意。\n計畫：${String(r.plan || '').slice(0, 900)}\n階段：\n${stages}\n每天最多花 NT$${c.dailyBudgetTwd}。\n用你自己的話簡短告訴主人重點（兩三句、講階段就好，不要整段照貼），問他同不同意；完整計畫在設定面板「探索 → 主人的委託」。`;
+      }
+      case 'reply_commission': {
+        const c = commissions.get(String(a.id || '')) || commissions.mentioned(ut) || commissions.recentWaiting() || commissions.open()[0];
+        if (!c) return '現在沒有進行中的委託。';
+        let d = String(a.decision || 'note');
+        const note = String(a.note || '').trim() || ut.slice(0, 500);
+        let warn = '';
+        if (d === 'approve' && !commissions.waiting(c)) (d = 'note'), (warn = '現在沒有在等主人回覆的檢查點，記成意見。');
+        // 主人用名字選（例如「幻光水母跟深空低語」）：他的話裡有兩組以上的字出現在等他回覆的報告裡，也算選好了
+        const wk = commissions.waiting(c);
+        const grams = new Set<string>();
+        for (const run of ut.match(/[\u4e00-\u9fff]+/g) || []) for (let i = 0; i + 2 <= run.length; i++) grams.add(run.slice(i, i + 2));
+        const picksFromReport = Boolean(wk && ut.length <= 60 && [...grams].filter((g) => wk.report.includes(g) || (wk.ask || '').includes(g)).length >= 2);
+        if (d === 'approve' && !((APPROVE_RE.test(ut) || SELECT_RE.test(ut) || picksFromReport) && !NEGATE_RE.test(ut)))
+          (d = 'note'), (warn = '主人的原話看起來不像明確同意或選好了，先記成意見；要開始的話請主人說一聲同意。');
+        if (d === 'changes' && !commissions.waiting(c)) d = 'note';
+        if (d === 'drop' && !STOP_RE.test(ut)) (d = 'note'), (warn = '主人沒有明確說不做了，記成意見。');
+        if (d === 'pause' && !PAUSE_RE.test(ut)) (d = 'note'), (warn = '主人沒有明確說暫停，記成意見。');
+        if (d === 'resume' && !RESUME_RE.test(ut)) (d = 'note'), (warn = '主人沒有明確說繼續，記成意見。');
+        if (d === 'approve' || d === 'changes') {
+          const k = commissions.waiting(c);
+          const r = await commissionAnswered(c, d, note, ctx.via);
+          if (!r.ok) return `沒成功：${(r as any).reason || ''}`;
+          if (d === 'approve')
+            return (r as any).finished
+              ? `「${c.title}」最後一個階段同意了，委託完成。`
+              : `記下主人同意了${k?.kind === 'plan' ? '計畫' : '這個階段'}${note ? `（${note.slice(0, 80)}）` : ''}。${k?.kind === 'plan' ? '接下來會開始第 1 階段' : `接下來做第 ${c.stage + 1} 階段「${c.stages[c.stage]?.title || ''}」`}，幾分鐘內在背景開工。`;
+          return k?.kind === 'plan' ? '記下主人要改的地方，計畫會照意見重寫，寫好會通知主人。' : '記下主人要改的地方，下一輪工作會照著改。';
+        }
+        if (d === 'pause') commissions.setStatus(c, 'paused');
+        else if (d === 'resume') commissions.setStatus(c, 'active');
+        else if (d === 'drop') commissions.setStatus(c, 'dropped');
+        else commissions.addFeedback(c, note, ctx.via);
+        console.log(`[委託] 「${c.title}」主人在${ctx.via === 'line' ? ' LINE ' : '聊天'}裡：${d}`);
+        return `${warn}${{ pause: '委託暫停了。', resume: '委託繼續。', drop: '委託取消了（工作區和工具會留著）。', note: '意見記下了，下一輪工作會看到。' }[d] || ''}`;
+      }
+      case 'commission_status': {
+        const c = commissions.get(String(a.id || '')) || commissions.mentioned(ut) || commissions.recentWaiting() || commissions.open()[0];
+        if (!c) return '現在沒有委託。';
+        const k = commissions.waiting(c);
+        const lastJob = [...c.jobs].reverse().find((j) => j.status !== 'running');
+        const running = c.jobs.some((j) => j.status === 'running');
+        return `委託「${c.title}」（${c.id}）：${{ planning: '正在寫計畫', review: '計畫等主人同意', active: '進行中', paused: '暫停', done: '完成', dropped: '取消' }[c.status]}
+主人的委託：${c.direction}
+計畫：${(c.plan || '（還沒寫好）').slice(0, 1000)}
+階段：${c.stages.map((s, i) => `${i + 1}.${s.title}［${{ todo: '還沒開始', doing: '進行中', review: '等主人看', done: '完成' }[s.status]}］`).join(' ')}
+${k ? `正在等主人回覆（${k.kind === 'plan' ? '計畫' : `第 ${(k.stage ?? 0) + 1} 階段`}）：${k.report.slice(0, 700)}${k.ask ? `\n想問主人：${k.ask}` : ''}\n` : ''}${running ? '工坊現在正在做。\n' : ''}${lastJob ? `最近一次工坊工作「${lastJob.goal}」（${lastJob.status === 'done' ? '完成' : '失敗'}）：${(lastJob.result || lastJob.error || '').slice(0, 600)}\n` : ''}${c.tool ? `做好的工具「${c.tool.title}」：${c.tool.desc}${c.runs.length ? `；最近執行${c.runs[c.runs.length - 1].ok ? '成功' : '失敗'}` : ''}\n` : ''}今天花了 NT$${usage.taskCostTwd(commissionTask(c)).toFixed(1)}／${c.dailyBudgetTwd}。`;
+      }
+      case 'plan_actions': {
+        const plan = await hostActions.create({ title: String(a.title || ''), why: String(a.why || ''), steps: Array.isArray(a.steps) ? a.steps : [], from: ctx.via === 'line' ? 'LINE 聊天' : '聊天' });
+        if (plan.status === 'waiting')
+          return `行動提案送出了（${plan.id}），程式檢查過的步驟：\n${plan.steps.map((s, i) => `${i + 1}. ${s.check || s.type}${s.warn ? `（⚠️ ${s.warn}）` : ''}`).join('\n')}\n主人要在電腦前打開設定面板「探索 → 行動提案」按同意才會執行。照實跟主人說。`;
+        return `行動提案檢查沒過，主人還看不到：\n${(plan.problems || []).join('\n')}\n照實跟主人說哪裡卡住（例如找不到這個套件），可以問他正確的名稱。`;
+      }
+      case 'my_tools':
+        return toolbox.describe(20) || '工具箱還是空的（委託做出能直接執行的工具之後才會有）。';
+      case 'run_my_tool': {
+        const out = await toolbox.run(String(a.tool || ''), ctx.via === 'line' ? 'LINE 聊天' : '聊天');
+        if (a.note) toolbox.setNote(String(a.tool || ''), String(a.note));
+        return `${out}\n（只挑主人要的重點講，不要整段照貼。）`;
+      }
+      default:
+        return `沒有這個工具：${name}`;
+    }
+  };
+}
+
+/** 串流聊天＋工具：第一輪可以輪替模型；用了工具之後固定同一個模型（思考簽章要原封不動傳回去） */
+async function streamChatWithTools(
+  ai: GoogleGenAI,
+  contents: any[],
+  config: Record<string, any>,
+  preferredModel: string | undefined,
+  abortSignal: AbortSignal,
+  onText: (t: string) => void,
+  runTool: ToolRunner
+): Promise<{ usedModel: string; fullText: string; calls: string[] }> {
+  let fixed: string | null = null;
+  const streamOnce = async (cts: any[], round: number, emit: (t: string) => void) => {
+    let lastError: any = null;
+    for (const model of fixed ? [fixed] : modelsToTryFor(preferredModel)) {
+      if (abortSignal.aborted) throw new DOMException('Client disconnected', 'AbortError');
+      const base = { ...config, tools: [{ functionDeclarations: CHAT_TOOL_DECLS }], abortSignal };
+      const attempts: Array<Record<string, any>> = [];
+      if (!noThinkingConfigModels.has(model)) attempts.push({ ...base, thinkingConfig: thinkingConfigFor(model) });
+      attempts.push(base);
+      for (let a = 0; a < attempts.length; a++) {
+        let started = false;
+        const parts: any[] = [];
+        let meta: any = null;
+        const t0 = Date.now();
+        try {
+          const stream = await ai.models.generateContentStream({ model, contents: cts, config: attempts[a] as any });
+          for await (const chunk of stream as any) {
+            if (chunk.usageMetadata) meta = chunk.usageMetadata;
+            for (const part of chunk.candidates?.[0]?.content?.parts || []) {
+              parts.push(part);
+              if (part.functionCall) started = true;
+              if (typeof part.text === 'string' && part.text && !part.thought) {
+                if (!started && round === 0) usage.recordTtft(Date.now() - t0);
+                started = true;
+                emit(part.text);
+              }
+            }
+          }
+          if (!started) throw new Error(`模型 ${model} 沒有回傳任何東西`);
+          if (a > 0) noThinkingConfigModels.add(model);
+          if (DEFAULT_CASCADE.includes(model)) lastWorkingModel = model;
+          usage.record(model, meta, Date.now() - t0);
+          fixed = model;
+          return { parts, meta };
+        } catch (err: any) {
+          if (isAbortError(err) || abortSignal.aborted) throw err;
+          if (started || fixed) throw err; // 已經輸出一半、或這一輪必須用同一個模型：不能換
+          lastError = err;
+          noteModelError(model, err);
+          if (err?.status === 404) {
+            missingModels.add(model);
+            break;
+          }
+          if (err?.status !== 400) break;
+        }
+      }
+    }
+    throw lastError || new Error('All Gemini models exhausted');
+  };
+  const r = await runToolLoopStream(contents, streamOnce, onText, runTool, (m) => console.log(m));
+  return { usedModel: fixed || '', fullText: r.fullText, calls: r.calls };
+}
+
+/** 非串流（LINE）聊天＋工具 */
+async function generateChatWithTools(ai: GoogleGenAI, contents: any[], config: Record<string, any>, preferredModel: string | undefined, runTool: ToolRunner) {
+  let fixed: string | null = null;
+  const withTools = { ...config, tools: [{ functionDeclarations: CHAT_TOOL_DECLS }] };
+  const generateOnce = async (cts: any[]) => {
+    if (!fixed) {
+      const { response, usedModel } = await generateSmartContent(ai, cts, withTools, preferredModel);
+      fixed = usedModel;
+      return { parts: response.candidates?.[0]?.content?.parts || [] };
+    }
+    const t0 = Date.now();
+    const cfg: any = noThinkingConfigModels.has(fixed) ? withTools : { ...withTools, thinkingConfig: thinkingConfigFor(fixed) };
+    const response: any = await ai.models.generateContent({ model: fixed, contents: cts, config: cfg });
+    usage.record(fixed, response.usageMetadata, Date.now() - t0);
+    return { parts: response.candidates?.[0]?.content?.parts || [] };
+  };
+  const r = await runToolLoop(contents, generateOnce, runTool, (m) => console.log(m));
+  return { usedModel: fixed || '', fullText: r.fullText, calls: r.calls };
+}
 const planningNow = new Set<string>();
 const planAttempts = new Map<string, number>();
 
@@ -3152,9 +3411,13 @@ const COMMISSION_CAPABILITIES = `你能用的（照實規劃，不要承諾做�
 - 每個階段做完要跟主人報告、等主人同意才往下做。`;
 
 /** 寫計畫（第一次，或主人要求修改後重寫）→ 交給主人看 */
-async function planCommission(c: Commission) {
+async function planCommission(
+  c: Commission,
+  opts: { notify?: boolean; context?: string } = {}
+): Promise<{ ok: boolean; reason?: string; plan?: string; say?: string }> {
   const ai = getAiClient();
-  if (!ai || planningNow.has(c.id)) return;
+  if (!ai) return { ok: false, reason: '沒有 GEMINI_API_KEY' };
+  if (planningNow.has(c.id)) return { ok: false, reason: '計畫已經在寫了' };
   planningNow.add(c.id);
   planAttempts.set(c.id, (planAttempts.get(c.id) || 0) + 1);
   try {
@@ -3163,11 +3426,12 @@ async function planCommission(c: Commission) {
     const prompt = `你是桌寵貓娘「西雅」。${persona.traits}
 主人交代你一個長期的委託。請先寫計畫給主人看（主人同意後才開始做）。
 主人的委託：${c.direction}
+${opts.context ? `你們剛剛的對話（主人怎麼說的、你怎麼回的；計畫要跟你剛剛說的一致）：\n${opts.context}\n` : ''}
 ${c.constraints ? `主人的限制：${c.constraints}\n` : ''}${c.plan ? `上一版計畫：\n${c.plan}\n` : ''}${fb ? `主人的意見（新的計畫一定要照這些改）：\n${fb}\n` : ''}
 ${COMMISSION_CAPABILITIES}
 請寫：
 - title：委託名稱（12 字內）
-- plan：計畫（繁體中文，1200 字內）：要做出什麼、資料從哪裡來（還沒驗證的寫「待驗證」）、怎麼做、成品長什麼樣子、主人怎麼用、風險和不確定的地方
+- plan：計畫（繁體中文，1200 字內，用平實清楚的文字寫，像一份工作計畫：不要角色語氣、不要稱呼主人、不要口癖）：要做出什麼、資料從哪裡來（還沒驗證的寫「待驗證」）、怎麼做、成品長什麼樣子、主人怎麼用、風險和不確定的地方
 - stages：2～6 個階段，每個 {"title"（10 字內）,"goal"（80 字內，做到什麼算完成）}；第一階段通常先驗證最不確定的事（例如資料抓不抓得到）
 - budget_twd：你建議這個委託每天最多花多少台幣（5～50；預設 ${defaultBudget()}）
 - say：交給主人時說的一句話（30 字內，你的語氣）
@@ -3189,12 +3453,15 @@ ${COMMISSION_CAPABILITIES}
     const stageText = c.stages.map((s, i) => `${i + 1}. ${s.title}：${s.goal}`).join('\n');
     commissions.addCheckpoint(c, 'plan', `計畫：${plan.slice(0, 500)}\n階段：\n${stageText}`);
     const say = String(out?.say || `「${c.title}」的計畫寫好了，你看看`).slice(0, 40);
-    await commissionNotify(
-      say,
-      `${say}\n\n【${c.title}】\n${plan.slice(0, 1000)}${plan.length > 1000 ? '…' : ''}\n\n階段：\n${stageText}\n\n每天最多花 NT$${c.dailyBudgetTwd}。可以的話回我「可以」，要改哪裡直接說～（設定面板「委託」也看得到完整計畫）`
-    );
+    if (opts.notify !== false)
+      await commissionNotify(
+        say,
+        `${say}\n\n【${c.title}】\n${plan.slice(0, 1000)}${plan.length > 1000 ? '…' : ''}\n\n階段：\n${stageText}\n\n每天最多花 NT$${c.dailyBudgetTwd}。可以的話回我「可以」，要改哪裡直接說～（設定面板「委託」也看得到完整計畫）`
+      );
+    return { ok: true, plan, say };
   } catch (err: any) {
     console.warn(`[委託] 「${c.title}」寫計畫失敗：`, err?.status || err?.message);
+    return { ok: false, reason: String(err?.message || err?.status || '寫計畫失敗').slice(0, 120) };
   } finally {
     planningNow.delete(c.id);
   }
@@ -3270,7 +3537,7 @@ function handleCommissionMarkers(raw: string, userText: string, via: 'desktop' |
 }
 
 const COMMISSION_TOOLS = [
-  ...RESEARCH_TOOLS.filter((t) => ['web_search', 'read_page', 'browse', 'notebook_search', 'notebook_read', 'write_note', 'plan_actions', 'revise_actions', 'propose', 'finish_cycle'].includes(t.name)),
+  ...RESEARCH_TOOLS.filter((t) => ['web_search', 'read_page', 'browse', 'notebook_search', 'notebook_read', 'write_note', 'plan_actions', 'revise_actions', 'my_tools', 'run_my_tool', 'propose', 'finish_cycle'].includes(t.name)),
   {
     name: 'project_work',
     description:
@@ -5640,17 +5907,24 @@ async function replyOnLine(cfg: LineConfig, batch: LineBatch) {
   promptMeter.record('line', { ...linePick.blocks, ...lineExtra }, lineStable, contents);
 
   let raw = '';
+  let lineToolCalls: string[] = [];
   try {
-    const { response } = await generateSmartContent(
-      ai,
-      contents,
-      { systemInstruction: lineSystemInstruction, temperature: 0.9 },
-      chatModelFor(userText, ctx.preferredModel, images.length > 0 || Boolean(search))
-    );
-    raw = response.text || '';
+    const lineModel = chatModelFor(userText, ctx.preferredModel, images.length > 0 || Boolean(search));
+    if (chatToolsOn()) {
+      const recentLine = merged
+        .slice(-7)
+        .map((m) => `${m.role === 'user' ? '主人' : '西雅'}：${cleanReply(String(m.content || '')).replace(/\s+/g, ' ').slice(0, 200)}`)
+        .join('\n');
+      const r = await generateChatWithTools(ai, contents, { systemInstruction: lineSystemInstruction, temperature: 0.9 }, lineModel, chatToolRunner({ via: 'line', userText, recent: recentLine }));
+      raw = r.fullText;
+      lineToolCalls = r.calls;
+    } else {
+      const { response } = await generateSmartContent(ai, contents, { systemInstruction: lineSystemInstruction, temperature: 0.9 }, lineModel);
+      raw = response.text || '';
+    }
     // LINE 不是串流：被抓到重複就請她重寫一次（只有被抓到的那次會慢幾秒）
     const hits = repeatHits(extractKeywords(raw).cleanText, lineRepeats);
-    if (hits.length) {
+    if (hits.length && !lineToolCalls.length) {
       console.log(`[重複] (LINE) 她還是用了：${hits.join('、')} → 請她重寫一次`);
       try {
         const { response: again } = await generateSmartContent(
@@ -5707,7 +5981,7 @@ async function replyOnLine(cfg: LineConfig, batch: LineBatch) {
   );
   presence.markNightAnnounced(cleanText);
   diary.markDreamIfMentioned(cleanText);
-  writebackChat(userText, cleanText);
+  if (!lineToolCalls.some((n) => /commission|tool|actions|workshop/.test(n))) writebackChat(userText, cleanText);
   needs.satisfy('social', 8);
   proactive.masterSpoke();
   stamina.spend(userText, (search ? 2 : 0) + images.length * 1.5);

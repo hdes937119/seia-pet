@@ -65,7 +65,8 @@ export interface ToolRun {
   code: number;
   ms: number;
   output: string;
-  trigger: 'manual' | 'schedule';
+  /** manual＝主人在面板按、schedule＝排程、seia＝她自己拿來用（工具箱） */
+  trigger: 'manual' | 'schedule' | 'seia';
 }
 
 export interface ProjectJob {
@@ -682,9 +683,12 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
 階段：${focus.stages.map((s, i) => `${i + 1}.${s.title}${i === focus.stage ? '←目前' : ''}`).join(' ')}
 ${k ? `⏳ 正在等主人回覆的檢查點（${k.kind === 'plan' ? '計畫' : `第 ${(k.stage ?? 0) + 1} 階段`}）：${k.report.slice(0, 500)}${k.ask ? `\n你問主人的：${k.ask}` : ''}\n` : ''}${lastJob ? `最近一次工坊工作（${lastJob.status === 'done' ? '完成' : '失敗'}）：${(lastJob.result || lastJob.error || '').slice(0, 400)}\n` : ''}${focus.tool ? `給主人的工具「${focus.tool.title}」：${focus.tool.desc}${focus.runs.length ? `；最近一次執行${focus.runs[focus.runs.length - 1].ok ? '成功' : '失敗'}` : ''}（主人可以在設定面板按「立即執行」）\n` : ''}${notes.length ? `你最近的研究筆記：\n${notes.map((n) => `  ${n.slice(0, 200)}`).join('\n')}\n` : ''}`);
     }
-    parts.push('聊到委託時照實說進度，不要說還沒做的已經做好了。主人對委託給意見、同意或要修改時，照規則 12 加標記。');
+    parts.push('聊到委託時照實說進度，不要說還沒做的已經做好了（細節不確定就用 commission_status 查）。主人對委託給意見、同意或要修改時，照規則 12 處理。');
     return parts.join('\n');
   }
+
+  /** 有做好工具的委託（給工具箱） */
+  const withTools = () => list.filter((c) => c.tool && c.status !== 'dropped');
 
   function snapshot() {
     return {
@@ -733,6 +737,7 @@ ${k ? `⏳ 正在等主人回覆的檢查點（${k.kind === 'plan' ? '計畫' : 
   return {
     get,
     open,
+    withTools,
     create,
     setPlan,
     addCheckpoint,
