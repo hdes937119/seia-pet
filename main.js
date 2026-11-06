@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, powerMonitor, shell, session } from 'electron';
 import path from 'path';
 import http from 'http';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -255,13 +256,313 @@ async function playtestWork(workId, file) {
     }
 }
 
+/* ===== 西雅的瀏覽器（11/6）：在背景（看不見的視窗）替她開網頁、點、打字 =====
+ * 登入資料存在自己的分區（persist:seia-browser），跟你的 Chrome、桌寵本身都分開。
+ * 擋住：本機和內網的網址（包含網頁裡偷偷連過去的請求）、file:、在密碼／信用卡欄位打字、
+ * 在付款／結帳／銀行／刪除帳號頁面點按或打字、跳出新視窗（改成在同一個分頁開）、網頁要權限（相機、通知…一律拒絕）。
+ * 下載的檔案存到 data/browser-downloads/（每個最多 300MB）。閒置 10 分鐘自動關掉。
+ * 你要幫她登入某個網站：後端叫 action=login，會開一個「看得到」的視窗，跟她共用同一個分區。
+ */
+const BROWSER_PARTITION = 'persist:seia-browser';
+const BROWSER_W = 1280;
+const BROWSER_H = 900;
+const BLOCK_HOST_RE = /^(localhost|127\.|10\.|0\.|169\.254\.|192\.168\.|::1$|::$|fc|fd|fe80:)|^172\.(1[6-9]|2\d|3[01])\.|^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|\.local$|\.localhost$|\.internal$/i;
+const SENSITIVE_URL_RE = /checkout|payment|\/pay(\/|\?|$)|paypal|billing|purchase|wallet|bank|transfer|delete[-_]?account|account\/delete|close[-_]?account|deactivate/i;
+const SECRET_FIELD_RE = /pass|pwd|card|cvv|cvc|ccnum|cc-|pin\b|otp|one-time|ssn|security.?code|身分證|密碼|卡號/i;
+let seiaBrowser = null;
+let browserIdle = null;
+let browserBusy = false;
+let browserLoginWin = null;
+const browserDownloads = [];
+
+function browserHostOk(raw) {
+    try {
+        const u = new URL(raw);
+        const h = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+        return !!h && !BLOCK_HOST_RE.test(h);
+    } catch {
+        return false;
+    }
+}
+function browserUrlOk(raw) {
+    try {
+        return /^https?:$/.test(new URL(raw).protocol) && browserHostOk(raw);
+    } catch {
+        return false;
+    }
+}
+
+function browserSession() {
+    const ses = session.fromPartition(BROWSER_PARTITION);
+    if (ses.__seiaSetup) return ses;
+    ses.__seiaSetup = true;
+    // 網頁裡任何請求（圖片、fetch、WebSocket…）都不准連到本機或內網，例如桌寵自己的 API
+    ses.webRequest.onBeforeRequest((d, cb) => {
+        let cancel = false;
+        try {
+            const u = new URL(d.url);
+            if (u.protocol === 'file:') cancel = true;
+            else if (/^(https?|wss?):$/.test(u.protocol)) cancel = !browserHostOk(d.url);
+        } catch {
+            // 看不懂的網址照常
+        }
+        cb({ cancel });
+    });
+    ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+    ses.on('will-download', (_e, item) => {
+        const dir = path.join(__dirname, 'data', 'browser-downloads');
+        try {
+            fs.mkdirSync(dir, { recursive: true });
+        } catch {
+            // 建不了就讓下載失敗
+        }
+        let name = String(item.getFilename() || 'download').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').slice(0, 120) || 'download';
+        let dest = path.join(dir, name);
+        for (let i = 1; fs.existsSync(dest) && i < 100; i++) dest = path.join(dir, name.replace(/(\.[^.]*)?$/, ` (${i})$1`));
+        item.setSavePath(dest);
+        const rec = { at: Date.now(), url: item.getURL().slice(0, 300), file: path.basename(dest), state: 'progressing' };
+        browserDownloads.push(rec);
+        if (browserDownloads.length > 20) browserDownloads.shift();
+        item.on('updated', () => {
+            if (item.getReceivedBytes() > 300 * 1024 * 1024) item.cancel();
+        });
+        item.once('done', (_ev, state) => {
+            rec.state = state;
+            console.log(`[瀏覽器] 下載${state === 'completed' ? '完成' : '沒成功'}：${rec.file}`);
+        });
+    });
+    return ses;
+}
+
+function closeSeiaBrowser() {
+    if (browserIdle) clearTimeout(browserIdle);
+    browserIdle = null;
+    if (seiaBrowser && !seiaBrowser.isDestroyed()) seiaBrowser.destroy();
+    seiaBrowser = null;
+}
+
+function guardContents(wc) {
+    wc.setAudioMuted(true);
+    // 新視窗（target=_blank）改成在同一個分頁開
+    wc.setWindowOpenHandler(({ url }) => {
+        if (browserUrlOk(url)) setTimeout(() => wc.loadURL(url).catch(() => {}), 0);
+        return { action: 'deny' };
+    });
+    const stop = (e, u) => {
+        if (!browserUrlOk(u)) e.preventDefault();
+    };
+    wc.on('will-navigate', stop);
+    wc.on('will-redirect', stop);
+}
+
+function ensureSeiaBrowser() {
+    if (browserIdle) clearTimeout(browserIdle);
+    browserIdle = setTimeout(closeSeiaBrowser, 10 * 60 * 1000);
+    if (seiaBrowser && !seiaBrowser.isDestroyed()) return seiaBrowser;
+    seiaBrowser = new BrowserWindow({
+        width: BROWSER_W,
+        height: BROWSER_H,
+        useContentSize: true,
+        show: false,
+        paintWhenInitiallyHidden: true,
+        backgroundColor: '#ffffff',
+        webPreferences: {
+            offscreen: true,
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            session: browserSession(),
+            backgroundThrottling: false,
+        },
+    });
+    seiaBrowser.webContents.setFrameRate(5);
+    guardContents(seiaBrowser.webContents);
+    return seiaBrowser;
+}
+
+const PAGE_STATE_JS = `(() => {
+  const sel = 'a[href],button,input:not([type=hidden]),textarea,select,[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=option],[contenteditable=""],[contenteditable=true],summary,[onclick]';
+  document.querySelectorAll('[data-seia-n]').forEach((e) => e.removeAttribute('data-seia-n'));
+  const out = [];
+  let n = 0;
+  for (const el of document.querySelectorAll(sel)) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2 || r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) continue;
+    const cs = getComputedStyle(el);
+    if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) continue;
+    n++;
+    el.setAttribute('data-seia-n', String(n));
+    const val = el.tagName === 'INPUT' && el.type === 'password' ? '' : (el.value || '');
+    const t = (el.innerText || val || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('alt') || el.getAttribute('name') || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+    out.push({ n, tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || '', role: el.getAttribute('role') || '', text: t, href: el.tagName === 'A' ? String(el.href || '').slice(0, 160) : '' });
+    if (n >= 120) break;
+  }
+  return { url: location.href, title: document.title, text: (document.body ? document.body.innerText : '').slice(0, 3000), elements: out, scrollY: Math.round(scrollY), scrollH: document.documentElement.scrollHeight, viewH: innerHeight };
+})()`;
+
+async function pageState(wc, withShot = true) {
+    const st = await Promise.race([wc.executeJavaScript(PAGE_STATE_JS, true), sleep(4000).then(() => null)]).catch(() => null);
+    const out = st || { url: wc.getURL(), title: wc.getTitle(), text: '', elements: [] };
+    if (withShot) {
+        try {
+            const img = await wc.capturePage();
+            if (!img.isEmpty()) out.shot = img.resize({ width: 960 }).toJPEG(60).toString('base64');
+        } catch {
+            // 沒截圖也沒關係
+        }
+    }
+    out.downloads = browserDownloads.slice(-5);
+    return out;
+}
+
+async function waitSettled(wc, ms = 1500) {
+    await sleep(300);
+    if (wc.isLoading()) await Promise.race([new Promise((r) => wc.once('did-stop-loading', r)), sleep(8000)]);
+    await sleep(ms);
+}
+
+/** 找到第 n 個元素：捲到畫面中間，回傳中心點和它是什麼 */
+async function locate(wc, n) {
+    return wc.executeJavaScript(
+        `(() => { const el = document.querySelector('[data-seia-n="${Number(n)}"]'); if (!el) return null;
+          el.scrollIntoView({ block: 'center', inline: 'center' }); const r = el.getBoundingClientRect();
+          const attrs = [el.getAttribute('type'), el.getAttribute('name'), el.getAttribute('id'), el.getAttribute('autocomplete'), el.getAttribute('aria-label'), el.getAttribute('placeholder')].filter(Boolean).join(' ');
+          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), tag: el.tagName.toLowerCase(), type: (el.getAttribute('type') || '').toLowerCase(), attrs, editable: el.isContentEditable }; })()`,
+        true
+    );
+}
+
+async function browserAction(j) {
+    const action = String(j.action || '');
+    if (action === 'close') {
+        closeSeiaBrowser();
+        return { ok: true };
+    }
+    if (action === 'login') {
+        const url = String(j.url || '');
+        if (!browserUrlOk(url)) return { ok: false, reason: '這個網址不能開' };
+        if (browserLoginWin && !browserLoginWin.isDestroyed()) {
+            browserLoginWin.loadURL(url).catch(() => {});
+            browserLoginWin.focus();
+            return { ok: true };
+        }
+        browserLoginWin = new BrowserWindow({
+            width: 1100,
+            height: 820,
+            title: '幫西雅登入（她的瀏覽器）',
+            autoHideMenuBar: true,
+            webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, session: browserSession() },
+        });
+        guardContents(browserLoginWin.webContents);
+        browserLoginWin.webContents.setAudioMuted(false);
+        browserLoginWin.on('closed', () => (browserLoginWin = null));
+        browserLoginWin.loadURL(url).catch(() => {});
+        return { ok: true };
+    }
+    if (action === 'clear') {
+        closeSeiaBrowser();
+        await browserSession().clearStorageData();
+        await browserSession().clearCache();
+        return { ok: true };
+    }
+    const win = ensureSeiaBrowser();
+    const wc = win.webContents;
+    const cur = wc.getURL();
+    if (action === 'open') {
+        const url = String(j.url || '');
+        if (!browserUrlOk(url)) return { ok: false, reason: '這個網址不能開（只能開公開的 http／https 網站）' };
+        await Promise.race([wc.loadURL(url).catch(() => {}), sleep(15000)]);
+        await waitSettled(wc);
+        return { ok: true, state: await pageState(wc) };
+    }
+    if (!cur || cur === 'about:blank') return { ok: false, reason: '還沒打開任何網頁，先用 open' };
+    if (action === 'state') return { ok: true, state: await pageState(wc, j.shot !== false) };
+    if (action === 'back') {
+        if (wc.canGoBack()) wc.goBack();
+        await waitSettled(wc);
+        return { ok: true, state: await pageState(wc) };
+    }
+    if (action === 'scroll') {
+        const dy = Math.max(-3000, Math.min(3000, Number(j.dy) || 700));
+        await wc.executeJavaScript(`window.scrollBy(0, ${dy})`, true).catch(() => {});
+        await sleep(700);
+        return { ok: true, state: await pageState(wc) };
+    }
+    if (action === 'click' || action === 'type') {
+        if (SENSITIVE_URL_RE.test(cur)) return { ok: false, reason: '這是付款、結帳、銀行或刪除帳號之類的頁面，要主人自己來' };
+        const el = await locate(wc, j.n).catch(() => null);
+        if (!el) return { ok: false, reason: `畫面上找不到第 ${j.n} 個元素（頁面可能變了，先用 state 重新看）` };
+        if (action === 'click') {
+            wc.sendInputEvent({ type: 'mouseMove', x: el.x, y: el.y });
+            wc.sendInputEvent({ type: 'mouseDown', x: el.x, y: el.y, button: 'left', clickCount: 1 });
+            wc.sendInputEvent({ type: 'mouseUp', x: el.x, y: el.y, button: 'left', clickCount: 1 });
+            await waitSettled(wc);
+            return { ok: true, state: await pageState(wc) };
+        }
+        if (el.type === 'password' || SECRET_FIELD_RE.test(el.attrs)) return { ok: false, reason: '這是密碼、卡號之類的欄位，西雅不能自己填（要登入就請主人幫忙）' };
+        const text = String(j.text || '').slice(0, 2000);
+        if (el.tag === 'select') {
+            await wc.executeJavaScript(
+                `(() => { const s = document.querySelector('[data-seia-n="${Number(j.n)}"]'); const t = ${JSON.stringify(text)};
+                  const o = [...s.options].find((x) => x.text.trim() === t || x.value === t) || [...s.options].find((x) => x.text.includes(t));
+                  if (o) { s.value = o.value; s.dispatchEvent(new Event('change', { bubbles: true })); } })()`,
+                true
+            );
+        } else {
+            wc.sendInputEvent({ type: 'mouseDown', x: el.x, y: el.y, button: 'left', clickCount: 1 });
+            wc.sendInputEvent({ type: 'mouseUp', x: el.x, y: el.y, button: 'left', clickCount: 1 });
+            await sleep(150);
+            wc.selectAll();
+            wc.insertText(text);
+            if (j.enter) {
+                await sleep(150);
+                wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+                wc.sendInputEvent({ type: 'char', keyCode: '\r' });
+                wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+            }
+        }
+        await waitSettled(wc, j.enter ? 1500 : 500);
+        return { ok: true, state: await pageState(wc) };
+    }
+    return { ok: false, reason: `不認得的動作：${action}` };
+}
+
+function handleBrowse(req, reply) {
+    let body = '';
+    req.on('data', (c) => {
+        body += c;
+        if (body.length > 20000) req.destroy();
+    });
+    req.on('end', async () => {
+        let j;
+        try {
+            j = JSON.parse(body || '{}');
+        } catch {
+            return reply(400, { ok: false });
+        }
+        const light = ['login', 'close'].includes(String(j.action));
+        if (browserBusy && !light) return reply(409, { ok: false, reason: 'busy' });
+        if (!light) browserBusy = true;
+        try {
+            reply(200, await browserAction(j));
+        } catch (err) {
+            reply(500, { ok: false, reason: String((err && err.message) || err).slice(0, 200) });
+        } finally {
+            if (!light) browserBusy = false;
+        }
+    });
+}
+
 function startPlaytestServer() {
     const srv = http.createServer((req, res) => {
         const reply = (code, obj) => {
             res.writeHead(code, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(obj));
         };
-        if (req.method !== 'POST' || req.url !== '/playtest' || req.headers['x-gemini-pet'] !== '1' || req.headers.origin) return reply(403, { ok: false });
+        if (req.method !== 'POST' || req.headers['x-gemini-pet'] !== '1' || req.headers.origin) return reply(403, { ok: false });
+        // 西雅的瀏覽器（同一個只聽 127.0.0.1 的通道）
+        if (req.url === '/browse') return handleBrowse(req, reply);
+        if (req.url !== '/playtest') return reply(404, { ok: false });
         let body = '';
         req.on('data', (c) => {
             body += c;

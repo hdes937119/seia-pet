@@ -70,6 +70,9 @@ export function usageTask<T>(task: string, fn: () => T): T {
   return als.run({ task }, fn);
 }
 
+/** 主人的委託（有自己的額度，不算進每日預算） */
+export const isCommissionTask = (task: string) => task.startsWith('commission:');
+
 export function currentTask(): string {
   return als.getStore()?.task || 'other';
 }
@@ -149,20 +152,36 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
     return Object.values(d.tasks).reduce((a, t) => a + t.costUsd, 0) * rate();
   }
 
+  /**
+   * 她日常活動的花費（不含主人的委託）：每日預算只看這個。
+   * 委託（任務名 commission:<id>）有自己的每日額度，不會跟她的日常活動互搶（11/6）。
+   */
+  function dailyCostTwd(ms = Date.now()) {
+    const d = days[dayKey(ms)];
+    if (!d) return 0;
+    return Object.entries(d.tasks).reduce((a, [k, t]) => a + (isCommissionTask(k) ? 0 : t.costUsd), 0) * rate();
+  }
+
+  /** 某個任務今天花了多少（台幣） */
+  function taskCostTwd(task: string, ms = Date.now()) {
+    const t = days[dayKey(ms)]?.tasks[task];
+    return t ? t.costUsd * rate() : 0;
+  }
+
   let warnedDate = '';
   /** 背景任務可以跑嗎（今天的花費還沒超過預算） */
   function backgroundAllowed(task: string): boolean {
     if (!BACKGROUND_TASKS.has(task)) return true;
-    const ok = todayCostTwd() < budgetTwd();
+    const ok = dailyCostTwd() < budgetTwd();
     if (!ok && warnedDate !== dayKey()) {
       warnedDate = dayKey();
-      log(`[用量] 今天已經花了約 NT$${todayCostTwd().toFixed(1)}，超過每日預算 NT$${budgetTwd()}，背景任務先休息到明天（聊天不受影響）`);
+      log(`[用量] 今天已經花了約 NT$${dailyCostTwd().toFixed(1)}（不含委託），超過每日預算 NT$${budgetTwd()}，背景任務先休息到明天（聊天不受影響）`);
     }
     return ok;
   }
 
   function overBudget() {
-    return todayCostTwd() >= budgetTwd();
+    return dailyCostTwd() >= budgetTwd();
   }
 
   /** 給設定面板 / 除錯 */
@@ -181,6 +200,7 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
         unknown: t.unknown,
         avgMs: t.calls ? Math.round(t.ms / t.calls) : 0,
         background: BACKGROUND_TASKS.has(task),
+        commission: isCommissionTask(task),
       }))
       .sort((a, b) => b.costTwd - a.costTwd);
     const totalPrompt = tasks.reduce((a, t) => a + t.prompt, 0);
@@ -198,6 +218,7 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
       date: dayKey(ms),
       budgetTwd: budgetTwd(),
       todayTwd: Math.round(todayCostTwd(ms) * 100) / 100,
+      dailyTwd: Math.round(dailyCostTwd(ms) * 100) / 100,
       monthTwd: Math.round(monthTwd * 100) / 100,
       overBudget: overBudget(),
       cacheHitRate: totalPrompt ? Math.round((totalCached / totalPrompt) * 100) : null,
@@ -210,7 +231,7 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
 
   /** 今天（或某一天）用了多少額度 */
   function budgetStatus(ms = Date.now()) {
-    const spent = todayCostTwd(ms);
+    const spent = dailyCostTwd(ms);
     const budget = budgetTwd();
     return { spentTwd: Math.round(spent * 10) / 10, budgetTwd: budget, ratio: budget ? spent / budget : 0 };
   }
@@ -232,7 +253,7 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
     return `【今天的額度】主人每天給你一筆 Gemini 額度（你思考、說話、做東西都會用到）。今天${state}。這是你自己的處境，不用一直提；主人問起、或要解釋為什麼今天不去工坊時再自然說一句。不要跟主人討額度，也不要怪主人。`;
   }
 
-  return { record, recordTtft, backgroundAllowed, overBudget, todayCostTwd, summary, budgetStatus, describeForChat };
+  return { record, recordTtft, backgroundAllowed, overBudget, todayCostTwd, dailyCostTwd, taskCostTwd, summary, budgetStatus, describeForChat };
 }
 
 export type Usage = ReturnType<typeof createUsage>;

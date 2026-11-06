@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { FolderGrants } from './FolderGrants';
+import { CommissionPanel } from './CommissionPanel';
+import { ActionsPanel } from './ActionsPanel';
 
 /**
  * 西雅的工坊（設定面板「探索」分頁）：叫她去工坊做東西、看她做好的作品、決定要不要讓她展示。
@@ -111,6 +113,7 @@ export const WorkshopPanel: React.FC = () => {
   if (!data) return <p className="text-[10px] text-slate-500 px-1">{msg || '讀取工坊中…'}</p>;
 
   return (
+    <>
     <div className="px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs space-y-2">
       <div className="flex items-center justify-between">
         <span>🛠️ 西雅的工坊</span>
@@ -209,5 +212,8 @@ export const WorkshopPanel: React.FC = () => {
       <p className="text-[10px] text-slate-500">作品在隔離的工坊裡做、在沙盒裡跑；只有你在下面給的資料夾，工作時才會唯讀掛進去。「讓她展示」之後，她聊天時才會提起它。</p>
       <FolderGrants />
     </div>
+    <CommissionPanel />
+    <ActionsPanel />
+    </>
   );
 };

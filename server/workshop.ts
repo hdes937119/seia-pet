@@ -444,7 +444,7 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
     return { ok: true };
   }
 
-  function runWsl(script: string, stdinText = ''): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  function runWsl(script: string, stdinText = '', timeoutSec = TIMEOUT_SEC + 90): Promise<{ stdout: string; stderr: string; code: number | null }> {
     return new Promise((resolve) => {
       // 腳本第一行會從標準輸入讀一行（真金鑰，交給轉接站）；金鑰不放在指令參數裡（參數在工坊裡看得到）
       const cmd = `echo ${b64(script)} | base64 -d > /tmp/seia-job.sh && bash /tmp/seia-job.sh`;
@@ -455,7 +455,7 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
       let stderr = '';
       child.stdout.on('data', (d) => (stdout += d.toString('utf8')));
       child.stderr.on('data', (d) => (stderr += d.toString('utf8')));
-      const killer = setTimeout(() => child.kill(), (TIMEOUT_SEC + 90) * 1000);
+      const killer = setTimeout(() => child.kill(), timeoutSec * 1000);
       child.on('error', (err) => {
         clearTimeout(killer);
         resolve({ stdout, stderr: `${stderr}\n${err.message}`, code: -1 });
@@ -466,6 +466,42 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
       });
     });
   }
+
+  /**
+   * 給委託（server/commission.ts）用：獨佔工坊跑一段 WSL 腳本（工坊在忙就回 null，不排隊）。
+   * 腳本的標準輸入第一行之後可以接很長的資料（工作區的 tar.gz）。
+   */
+  function exclusive<T>(label: string, fn: (run: (script: string, stdin: string, timeoutSec: number) => Promise<{ stdout: string; stderr: string; code: number | null }>) => Promise<T>): Promise<T> | null {
+    if (busy) return null;
+    busy = label;
+    log(`[工坊] ${label}`);
+    const raw = (script: string, stdin: string, timeoutSec: number) =>
+      new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
+        const cmd = `echo ${b64(script)} | base64 -d > /tmp/seia-job.sh && bash /tmp/seia-job.sh`;
+        const child = spawn('wsl.exe', ['-d', deps.distro, '-e', 'bash', '-c', cmd], { windowsHide: true });
+        child.stdin.on('error', () => {});
+        child.stdin.end(`${stdin}\n`);
+        const chunks: Buffer[] = [];
+        let stderr = '';
+        child.stdout.on('data', (d: Buffer) => chunks.push(d));
+        child.stderr.on('data', (d) => (stderr += d.toString('utf8')));
+        const killer = setTimeout(() => child.kill(), timeoutSec * 1000);
+        const done = (code: number | null, extra = '') => {
+          clearTimeout(killer);
+          resolve({ stdout: Buffer.concat(chunks).toString('utf8'), stderr: `${stderr}${extra}`, code });
+        };
+        child.on('error', (err) => done(-1, `\n${err.message}`));
+        child.on('close', (code) => done(code));
+      });
+    return (async () => {
+      try {
+        return await fn(raw);
+      } finally {
+        busy = null;
+      }
+    })();
+  }
+  const isBusy = () => busy;
 
   /**
    * 開工（不等做完；做完會呼叫 onDone）。
@@ -779,7 +815,7 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
       .map((w) => `${w.kind === 'lab' ? '（實驗室）' : ''}「${w.title}」${w.superseded ? '第一版自己看了不滿意，重做' : w.status === 'failed' ? `沒做成功${w.error ? `（${w.error.slice(0, 40)}）` : ''}` : '做好了'}${w.comment ? `，你的心得：${w.comment}` : ''}${w.lesson ? `，學到：${w.lesson}` : ''}`);
   }
 
-  return { canStartLab, writeSkillTest, findSkills, addSkills, markSkillResult, markSkillsMaster, skillNames, skillsText, isBackfilled, markBackfilled, savePlaytest, setPlaytestSeen, untestedExperiments, autoAllowed, setAutoEnabled, canStart, start, get, addNote, dayRecap, describeTool, toolAvailable, supersede, setStatus, remove, filePath, entrySource, describeForChat, markToldIfMentioned, snapshot };
+  return { exclusive, isBusy, canStartLab, writeSkillTest, findSkills, addSkills, markSkillResult, markSkillsMaster, skillNames, skillsText, isBackfilled, markBackfilled, savePlaytest, setPlaytestSeen, untestedExperiments, autoAllowed, setAutoEnabled, canStart, start, get, addNote, dayRecap, describeTool, toolAvailable, supersede, setStatus, remove, filePath, entrySource, describeForChat, markToldIfMentioned, snapshot };
 }
 
 export type Workshop = ReturnType<typeof createWorkshop>;
