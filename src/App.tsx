@@ -40,6 +40,7 @@ import { useClickThrough } from './hooks/useClickThrough';
 import { useMusicPlayer } from './hooks/useMusicPlayer';
 import { MusicPlayer } from './components/MusicPlayer';
 import { ScreenVisionTracker } from './components/ScreenVisionTracker';
+import type { PinMode } from './components/SettingsPanel';
 import { grabLiveFrame } from './liveFrame';
 import { PersonalityTuner } from './components/PersonalityTuner';
 import { MemoryNotebookModal } from './components/MemoryNotebookModal';
@@ -139,6 +140,8 @@ const INITIAL_VIDEOS: DiscoveredVideo[] = [
     discoveredAt: '09:15',
   },
 ];
+
+const PIN_MODE_KEY = 'gemini_twin_cat_pin_mode';
 
 export default function App() {
   // 1. Core State
@@ -712,6 +715,42 @@ export default function App() {
     return api.onVoiceHotkey(() => voiceInput.toggle());
   }, [voiceInput.toggle]);
 
+  // 置頂模式：off＝一般視窗、normal＝一般置頂、game＝遊戲中也在最上層（預設）
+  const [pinMode, setPinMode] = useState<PinMode>(() => {
+    try {
+      const v = localStorage.getItem(PIN_MODE_KEY);
+      return v === 'off' || v === 'normal' || v === 'game' ? v : 'game';
+    } catch {
+      return 'game';
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(PIN_MODE_KEY, pinMode);
+    } catch {
+      // ignore
+    }
+    (window as any).electronAPI?.setPinMode?.(pinMode);
+  }, [pinMode]);
+
+  // 叫出她的全域熱鍵：打開對話框、焦點放到輸入框，可以直接打字
+  const [summonHotkey, setSummonHotkey] = useState<string | null>(null);
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    if (!api?.onSummon) return;
+    api.getSummonHotkey?.().then((label: string | null) => setSummonHotkey(label));
+    return api.onSummon(() => {
+      markPetInteraction();
+      setIsChatOpen(true);
+      const focusInput = (tries: number) => {
+        const el = document.querySelector('input[data-chat-input]') as HTMLInputElement | null;
+        if (el) el.focus();
+        else if (tries > 0) setTimeout(() => focusInput(tries - 1), 80);
+      };
+      setTimeout(() => focusInput(10), 50);
+    });
+  }, []);
+
   // 3. Screen Vision Activity Detected — appends real-time video/screen commentary directly into chat
   // unless user is actively waiting on their own typed chat message
   const handleActivityDetected = useCallback(
@@ -1161,6 +1200,9 @@ export default function App() {
         voiceEnabled={voiceEnabled}
         onToggleVoice={() => setVoiceEnabled(!voiceEnabled)}
         voiceHotkey={voiceHotkey}
+        pinMode={pinMode}
+        onPinModeChange={setPinMode}
+        summonHotkey={summonHotkey}
         screenTracker={
           <ScreenVisionTracker
             personality={personality}

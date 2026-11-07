@@ -15,6 +15,7 @@ import { voiceService } from '../services/voiceService';
  */
 
 export type SettingsTab = 'look' | 'model' | 'screen' | 'persona' | 'explore';
+export type PinMode = 'off' | 'normal' | 'game';
 type Tab = SettingsTab;
 
 export interface ExploreStatus {
@@ -39,6 +40,10 @@ interface SettingsPanelProps {
   voiceEnabled: boolean;
   onToggleVoice: () => void;
   voiceHotkey: string | null;
+  /** 置頂模式與叫出她的熱鍵 */
+  pinMode: PinMode;
+  onPinModeChange: (m: PinMode) => void;
+  summonHotkey: string | null;
   screenTracker: React.ReactNode;
   personalityTuner: React.ReactNode;
   exploreSettings: ExploreSettings;
@@ -149,6 +154,24 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
       <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
         {/* 外觀 */}
         <div className={tab === 'look' ? 'space-y-3' : 'hidden'}>
+          <div className="px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span>📌 置頂</span>
+              <select
+                value={props.pinMode}
+                onChange={(e) => props.onPinModeChange(e.target.value as PinMode)}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs"
+              >
+                <option value="game">遊戲中也在最上層</option>
+                <option value="normal">一般置頂</option>
+                <option value="off">不置頂</option>
+              </select>
+            </div>
+            <span className="block text-[10px] text-slate-400 leading-relaxed">
+              「遊戲中也在最上層」：遊戲要設成無邊框視窗（Windowed Fullscreen）；獨佔全螢幕的遊戲誰都蓋不過，請用熱鍵叫她。
+              {props.summonHotkey ? ` 叫出她：${props.summonHotkey}（再按一次把焦點還給遊戲）` : ''}
+            </span>
+          </div>
           <p className="text-[11px] text-slate-400">立繪樣式</p>
           <div className="flex gap-1.5">
             {modeButton('chibi', '動態桌寵', <Wand2 className="w-3.5 h-3.5" />)}

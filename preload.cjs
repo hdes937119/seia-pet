@@ -28,4 +28,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('voice-hotkey', handler);
     return () => ipcRenderer.removeListener('voice-hotkey', handler);
   },
+  // 置頂模式（off／normal／game）與叫出她的全域熱鍵
+  setPinMode: (mode) => ipcRenderer.send('set-pin-mode', String(mode)),
+  getSummonHotkey: () => ipcRenderer.invoke('get-summon-hotkey'),
+  onSummon: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('summon', handler);
+    return () => ipcRenderer.removeListener('summon', handler);
+  },
 });

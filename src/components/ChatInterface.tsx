@@ -502,6 +502,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
 
         <input
           type="text"
+          data-chat-input="1"
           value={inputText}
           onChange={(e) => setInputText(e.target.value)}
           onPaste={(e) => {

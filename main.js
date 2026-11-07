@@ -14,6 +14,38 @@ let mainWindow;
 // 改掉會讓聊天紀錄、記憶、立繪「看起來不見」，所以保持原本的 localhost。
 const APP_URL = 'http://localhost:3000';
 
+// 置頂：off＝一般視窗、normal＝一般置頂、game＝最上層（無邊框全螢幕的遊戲也蓋不住她）
+// 前端開機時會用 set-pin-mode 告訴這裡主人選的模式
+let pinMode = 'normal';
+let pinTimer = null;
+function applyPin() {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (pinTimer) { clearInterval(pinTimer); pinTimer = null; }
+    if (pinMode === 'off') {
+        mainWindow.setAlwaysOnTop(false);
+        return;
+    }
+    if (pinMode === 'game') {
+        mainWindow.setAlwaysOnTop(true, 'screen-saver');
+        mainWindow.moveTop();
+        // 遊戲搶到前景時會把自己排到最上面，定時再把她拉回來（不搶焦點）
+        pinTimer = setInterval(reassertTop, 3000);
+        return;
+    }
+    mainWindow.setAlwaysOnTop(true, 'floating');
+}
+function reassertTop() {
+    if (pinMode !== 'game' || !mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized() || !mainWindow.isVisible()) return;
+    mainWindow.setAlwaysOnTop(true, 'screen-saver');
+    mainWindow.moveTop();
+}
+ipcMain.on('set-pin-mode', (_event, mode) => {
+    pinMode = mode === 'off' || mode === 'game' ? mode : 'normal';
+    applyPin();
+    console.log(`[置頂] 模式：${pinMode}`);
+});
+
 function createWindow() {
     mainWindow = new BrowserWindow({
         // 浮動版面：右下角是立繪，上方留空間給漫畫氣泡式對話框
@@ -653,6 +685,40 @@ let registeredVoiceHotkey = null;
 
 ipcMain.handle('get-voice-hotkey', () => registeredVoiceHotkey);
 
+// 叫出她的全域熱鍵：不管在哪個畫面都把她拉到最上面、把焦點給聊天框；她已經在焦點上就把焦點還回去
+// 預設 Ctrl+Alt+S，可用環境變數 SUMMON_HOTKEY 改
+const SUMMON_HOTKEY = process.env.SUMMON_HOTKEY || 'Ctrl+Alt+S';
+let registeredSummonHotkey = null;
+ipcMain.handle('get-summon-hotkey', () => registeredSummonHotkey);
+
+function summonPet() {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isFocused()) {
+        mainWindow.blur(); // 焦點交回給後面的視窗（通常就是遊戲）
+        if (pinMode !== 'game') applyPin();
+        return;
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.setAlwaysOnTop(true, 'screen-saver');
+    mainWindow.moveTop();
+    mainWindow.focus();
+    mainWindow.webContents.focus();
+    mainWindow.webContents.send('summon');
+    // 不是「遊戲中最上層」模式時，等她失去焦點再回到原本的置頂等級
+    if (pinMode !== 'game') mainWindow.once('blur', () => applyPin());
+}
+
+function registerSummonHotkey() {
+    const ok = globalShortcut.register(SUMMON_HOTKEY, summonPet);
+    if (ok) {
+        registeredSummonHotkey = SUMMON_HOTKEY;
+        console.log(`[置頂] 叫出熱鍵 ${SUMMON_HOTKEY} 已啟用`);
+    } else {
+        console.log(`[置頂] ⚠️ 熱鍵 ${SUMMON_HOTKEY} 被其他程式占用，請用 SUMMON_HOTKEY 換一組`);
+    }
+}
+
 function registerVoiceHotkey() {
     const ok = globalShortcut.register(VOICE_HOTKEY, () => {
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -671,7 +737,10 @@ app.whenReady().then(() => {
     createWindow();
     // 保險：視窗失去焦點時一定停止拖曳
     mainWindow.on('blur', stopWindowDrag);
+    // 遊戲搶走焦點時，最上層模式馬上把她拉回來一次
+    mainWindow.on('blur', () => setTimeout(reassertTop, 250));
     registerVoiceHotkey();
+    registerSummonHotkey();
     startPlaytestServer();
 });
 
