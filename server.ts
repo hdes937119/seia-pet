@@ -1045,7 +1045,7 @@ function buildSystemPrompt(
   personality: PersonalityConfig,
   permanentMemories: Array<{ keyword: string; category: string; notes?: string }> = [],
   activeKeywords: Array<{ keyword: string; strength: number }> = [],
-  currentActivity?: { type: string; title: string; observation?: string; appContext?: string },
+  currentActivity?: { type: string; title: string; observation?: string; appContext?: string; capturedAt?: number },
   clientTime?: ClientTime,
   eventContext = '',
   musicState?: MusicState,
@@ -1085,12 +1085,24 @@ function buildSystemPrompt(
       : '';
 
   // 主人在打遊戲時，她是一起玩的朋友：可以自然地聊遊戲裡正在發生的事；其他情況則只在被問起時才提畫面
+  // 畫面描述是上一次分析時寫的，可能已經過了好幾分鐘：標上多久以前，太舊就不帶細節
+  const actAgeMin =
+    currentActivity && typeof currentActivity.capturedAt === 'number' && currentActivity.capturedAt > 0
+      ? Math.max(0, Math.floor((Date.now() - currentActivity.capturedAt) / 60000))
+      : 0;
+  const actObservation = !currentActivity
+    ? ''
+    : actAgeMin >= ACTIVITY_DROP_MIN
+      ? `（${actAgeMin} 分鐘前看過一次，太久了，細節不提供；不要猜主人現在在畫面的哪裡、在做什麼）`
+      : actAgeMin >= ACTIVITY_STALE_MIN
+        ? `（注意：這是 ${actAgeMin} 分鐘前看到的畫面，主人現在可能已經換地方、換畫面了。主人這句有附上截圖就以截圖為準；沒有截圖就不要把下面當成現在的狀況講）${currentActivity.observation || ''}`
+        : currentActivity.observation || '';
   const activityContext = !currentActivity
     ? ''
     : isGamingActivity(currentActivity)
-      ? `【主人正在玩遊戲：「${currentActivity.title}」】：${currentActivity.observation || ''}
+      ? `【主人正在玩遊戲：「${currentActivity.title}」】：${actObservation}
 你是陪主人一起玩的遊戲夥伴：可以自然地聊遊戲裡正在發生的事（關卡、Boss、角色、裝備、剛剛的操作），即時加油、吐槽或給一個小建議；主人在打遊戲，回覆要短（1~2句）、好讀。`
-      : `【背景參考（主人目前螢幕視窗為「${currentActivity.title}」，僅在主人主動問起畫面或相關話題時才引用，平時請專心回應主人的話！）】：${currentActivity.observation || ''}`;
+      : `【背景參考（主人目前螢幕視窗為「${currentActivity.title}」，僅在主人主動問起畫面或相關話題時才引用，平時請專心回應主人的話！）】：${actObservation}`;
 
   // 提示詞分成兩段：前面是不常變的身分和規則、後面才是每次都會變的狀況。
   // 這樣 Gemini 的隱式快取能重複使用前面那一大段（快取命中的輸入便宜約 90%）。借用 dsh-feiyu-mood 的做法。
@@ -1176,13 +1188,17 @@ function describeGap(ms: number): string {
 
 // 只在明確問到畫面時才附截圖（避免「什麼」「這個」這類常見詞誤判）
 const SCREEN_QUESTION_RE = /畫面|螢幕|影片|視窗|字幕|這部|這段|這個人|這遊戲|你看|看到|在看|在玩|截圖/;
+// 畫面描述超過幾分鐘要標「可能已經變了」、超過幾分鐘就不帶細節
+const ACTIVITY_STALE_MIN = 2;
+const ACTIVITY_DROP_MIN = 20;
 
 function normalizeChatContents(
   messages: Array<{ role: string; content: string; at?: number }>,
   latestScreenshot?: string,
   latestScreenshotAt?: number,
   isGaming = false,
-  windowKey = 'desktop'
+  windowKey = 'desktop',
+  screenshotLive = false
 ) {
   const normalized: Array<{ role: 'user' | 'model'; parts: Array<any> }> = [];
   // 每則合併後訊息的時間（給「一次跳 10 則」的對話視窗找起點）
@@ -1266,12 +1282,21 @@ function normalizeChatContents(
   if (latestScreenshot && asksAboutScreen && isFresh && lastTurn && lastTurn.role === 'user') {
     const matches = latestScreenshot.match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
     if (matches) {
-      lastTurn.parts.unshift({
-        inlineData: {
-          mimeType: matches[1],
-          data: matches[2],
-        },
-      });
+      const shotAgeMin = Math.max(0, Math.floor((Date.now() - (latestScreenshotAt as number)) / 60000));
+      const shotNote = screenshotLive
+        ? '<!--這張截圖是主人送出這句話時當場截的，就是現在的畫面；跟背景資料裡比較早的畫面描述不一樣時，以這張為準-->'
+        : shotAgeMin >= 1
+          ? `<!--這張截圖是 ${shotAgeMin} 分鐘前截的，主人現在的畫面可能已經不一樣了-->`
+          : '<!--這張截圖是不到 1 分鐘前截的-->';
+      lastTurn.parts.unshift(
+        { text: shotNote },
+        {
+          inlineData: {
+            mimeType: matches[1],
+            data: matches[2],
+          },
+        }
+      );
     }
   }
 
@@ -1332,6 +1357,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       currentActivity,
       latestScreenshot,
       latestScreenshotAt,
+      latestScreenshotLive,
       preferredModel,
       clientTime,
       musicState,
@@ -1473,7 +1499,9 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       messages || [],
       latestScreenshot,
       latestScreenshotAt,
-      isGamingActivity(currentActivity)
+      isGamingActivity(currentActivity),
+      'desktop',
+      latestScreenshotLive === true
     );
     // 找到的梗圖讓她真的看到
     if (search) {

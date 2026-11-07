@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { ScreenActivity, PersonalityConfig, MemoryKeyword, GeminiModelOption } from '../types';
 import { getClientTime } from '../utils/clientTime';
+import { setLiveFrameGetter } from '../liveFrame';
 
 const GAME_COOLDOWN_KEY = 'gemini_twin_cat_game_cooldown';
 const isGamingActivity = (a: ScreenActivity | null) =>
@@ -214,6 +215,16 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
     ctx.drawImage(video, 0, 0, width, height);
     return canvas.toDataURL('image/jpeg', 0.75);
   }, []);
+
+  // 讓聊天送出時可以當場抓一張現在的畫面（只在共享＋自動觀察開著時）
+  useEffect(() => {
+    if (!stream || !isAutoTracking) {
+      setLiveFrameGetter(null);
+      return;
+    }
+    setLiveFrameGetter(() => captureFrame());
+    return () => setLiveFrameGetter(null);
+  }, [stream, isAutoTracking, captureFrame]);
 
   const resetChangeTracking = useCallback(() => {
     prevScorePixelsRef.current = null;

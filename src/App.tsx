@@ -40,6 +40,7 @@ import { useClickThrough } from './hooks/useClickThrough';
 import { useMusicPlayer } from './hooks/useMusicPlayer';
 import { MusicPlayer } from './components/MusicPlayer';
 import { ScreenVisionTracker } from './components/ScreenVisionTracker';
+import { grabLiveFrame } from './liveFrame';
 import { PersonalityTuner } from './components/PersonalityTuner';
 import { MemoryNotebookModal } from './components/MemoryNotebookModal';
 import { IdleVideoBacklogModal } from './components/IdleVideoBacklogModal';
@@ -562,6 +563,8 @@ export default function App() {
         mosaic: m.mosaic,
       }));
       pendingMediaRef.current = [];
+      // 送出這一刻的畫面（螢幕共享開著才有）；抓不到才用上次分析時的截圖
+      const liveFrame = grabLiveFrame();
 
       const data = await streamChat(
         {
@@ -578,10 +581,12 @@ export default function App() {
               appContext: currentActivity.appContext,
               title: currentActivity.title,
               observation: currentActivity.observation,
+              capturedAt: currentActivity.capturedAt,
             }
             : undefined,
-          latestScreenshot: currentActivity?.screenshotUrl,
-          latestScreenshotAt: currentActivity?.capturedAt,
+          latestScreenshot: liveFrame?.data ?? currentActivity?.screenshotUrl,
+          latestScreenshotAt: liveFrame?.at ?? currentActivity?.capturedAt,
+          latestScreenshotLive: !!liveFrame,
           staminaMode: exploreSettings.stamina,
           attachments,
           preferredModel,
