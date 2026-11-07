@@ -163,18 +163,21 @@ export function createProactive(dataDir: string, deps: ProactiveDeps) {
    * 螢幕搭話（主人自己打開的螢幕偵測）用的輕量檢查：頻率由前端的冷卻時間管，不算進每天的主動句數，
    * 這裡只擋「她在忙」和「主人 1 分鐘內剛講過話」（剛聊完就不要插嘴吐槽畫面）。
    */
-  function screenCheck(now = Date.now()): { ok: boolean; reason?: string } {
+  // live＝實況模式（主人開的、只在遊戲畫面）：不等主人回應，頻率交給前端的冷卻時間
+  function screenCheck(now = Date.now(), live = false): { ok: boolean; reason?: string } {
     if (deps.isBusy?.()) return { ok: false, reason: '她正在忙' };
     if (now - st.lastMasterAt < SCREEN_AFTER_MASTER_MS) return { ok: false, reason: '主人剛剛才跟她說過話' };
+    if (live) return { ok: true };
     if (st.unanswered >= UNANSWERED_STOP) return { ok: false, reason: `主人還沒回前面 ${st.unanswered} 句` };
     if (now - (st.lastScreenAt || 0) < SCREEN_MIN_GAP_MS) return { ok: false, reason: '剛剛才吐槽過畫面' };
     return { ok: true };
   }
 
   /** 自動螢幕吐槽真的說出口了：也算一句「主人還沒回」 */
-  function screenSaid(now = Date.now()) {
+  function screenSaid(now = Date.now(), live = false) {
     st.lastScreenAt = now;
-    st.unanswered++;
+    // 實況模式的吐槽是旁白，不算「主人還沒回」，關掉實況後才不會因為累積的次數一直不說話
+    if (!live) st.unanswered++;
     save();
   }
 

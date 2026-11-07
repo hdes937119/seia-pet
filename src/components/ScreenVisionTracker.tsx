@@ -15,6 +15,7 @@ import { getClientTime } from '../utils/clientTime';
 import { setLiveFrameGetter } from '../liveFrame';
 
 const GAME_COOLDOWN_KEY = 'gemini_twin_cat_game_cooldown';
+const LIVE_MODE_KEY = 'gemini_twin_cat_live_commentary';
 const isGamingActivity = (a: ScreenActivity | null) =>
   a?.category === 'gaming' || a?.appContext === 'gaming';
 
@@ -89,6 +90,23 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
     }
   });
   const [isGamingNow, setIsGamingNow] = useState(false);
+  // 實況模式：遊戲畫面時不等主人回應也會吐槽（頻率照遊戲冷卻時間）
+  const [liveMode, setLiveMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(LIVE_MODE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const liveModeRef = useRef(liveMode);
+  useEffect(() => {
+    liveModeRef.current = liveMode;
+    try {
+      localStorage.setItem(LIVE_MODE_KEY, liveMode ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [liveMode]);
   const [pace, setPace] = useState<VisionPace>(() => {
     try {
       const v = localStorage.getItem(PACE_KEY);
@@ -417,6 +435,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
             mosaicFrames: visual?.frames,
             mosaicNote: visual?.note,
             manual,
+            liveCommentary: !manual && liveModeRef.current && isGamingActivity(lastActivityRef.current),
             preferredModel: preferredModelRef.current,
             clientTime: getClientTime(),
           }),
@@ -838,6 +857,20 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
                 </option>
               ))}
             </select>
+            <label
+              className={`flex items-center gap-1 border rounded px-1.5 py-0.5 text-[10px] cursor-pointer ${
+                liveMode ? 'bg-rose-950/70 border-rose-500/60 text-rose-100' : 'bg-slate-900 border-slate-700 text-slate-300'
+              }`}
+              title="只在遊戲畫面生效：你沒回她也會照遊戲冷卻時間繼續吐槽（像實況旁白）；你剛講完話 1 分鐘內還是不插嘴。越勤越耗 Gemini 額度"
+            >
+              <input
+                type="checkbox"
+                checked={liveMode}
+                onChange={(e) => setLiveMode(e.target.checked)}
+                className="w-3 h-3 accent-rose-500"
+              />
+              🎙️ 實況模式
+            </label>
           </div>
         </div>
         <video

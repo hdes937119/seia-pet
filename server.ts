@@ -1665,14 +1665,17 @@ app.post('/api/vision-track', async (req: Request, res: Response) => {
       mosaicKind,
       mosaicNote,
       manual,
+      liveCommentary,
     } = req.body;
+    // 實況模式：主人在面板打開、而且上一刻是遊戲畫面時，前端才會送 true
+    const live = liveCommentary === true;
 
     if (!screenshot) {
       return res.status(400).json({ error: 'Screenshot is required' });
     }
     // 自動的螢幕搭話先問閘門（主人手動按「立即看畫面」或貼圖不擋）；被擋就不叫 Gemini，不花額度
     if (!manual) {
-      const gate = proactive.screenCheck();
+      const gate = proactive.screenCheck(Date.now(), live);
       if (!gate.ok) {
         console.log(`[主動] 螢幕搭話先不說：${gate.reason}`);
         return res.json({ skipped: true, reason: gate.reason });
@@ -1706,6 +1709,7 @@ ${describeMyRecentLines()}
 ${recentActivity ? `【上一刻的畫面是】：標題「${recentActivity}」(${recentObservation || ''})。如果現在畫面中的影片、字幕、人物、場景或視窗跟上一刻不同，請務必指出畫面換成了什麼新內容！` : ''}
 ${scenarioHint ? `【場景提示】：${scenarioHint}` : ''}
 ${mosaicPrompt}
+${live ? '【實況模式】主人打開了實況模式：他在專心玩，不會一直回你。像在旁邊看實況一樣，看到什麼就自然吐槽、加油或碎念；不用等他回，也不要追問「怎麼不理我」「有在聽嗎」，不要一直問問題。' : ''}
 
 請仔細辨識畫面中的【具體文字、影片標題、字幕台詞、人物造型與動作、遊戲UI或聊天內容】，嚴格禁止說空泛套話！你的搭話必須直接提及你在這張圖裡真正看到的細節（例如讀出畫面上的字幕、說出畫面人物的動作或正在播放的具體題材）。
 
@@ -1760,7 +1764,10 @@ ${recentActivity ? '- 跟上一刻比較：如果是同一場戰鬥/同一關，
     const activityTitle = parsed.activityTitle || '螢幕畫面分析完成';
     if (parsed.activityTitle) observe('screen', `${activityTitle}：${parsed.observation || ''}`);
     if (!manual && parsed.catComment) {
-      proactive.screenSaid();
+      // 只有真的還是遊戲畫面才算實況（切回別的畫面就照一般規則算「主人還沒回」）
+      const stillGaming = parsed.activityCategory === 'gaming' || parsed.appContext === 'gaming';
+      proactive.screenSaid(Date.now(), live && stillGaming);
+      if (live && stillGaming) console.log('[主動] 實況模式吐槽（不算主人還沒回）');
       noteSaid(String(parsed.catComment));
     }
     return res.json({
