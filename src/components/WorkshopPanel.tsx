@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { FolderGrants } from './FolderGrants';
 import { CommissionPanel } from './CommissionPanel';
+import { WidgetsPanel } from './WidgetsPanel';
 import { ActionsPanel } from './ActionsPanel';
 
 /**
@@ -212,6 +213,7 @@ export const WorkshopPanel: React.FC = () => {
       <p className="text-[10px] text-slate-500">作品在隔離的工坊裡做、在沙盒裡跑；只有你在下面給的資料夾，工作時才會唯讀掛進去。「讓她展示」之後，她聊天時才會提起它。</p>
       <FolderGrants />
     </div>
+    <WidgetsPanel />
     <CommissionPanel />
     <ActionsPanel />
     </>

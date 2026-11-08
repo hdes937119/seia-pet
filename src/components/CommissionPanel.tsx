@@ -242,9 +242,12 @@ export const CommissionPanel: React.FC = () => {
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={() =>
-                        call(`/api/commissions/${c.id}/checkpoint`, 'POST', { decision: 'approve', note }, c.waiting?.stuck ? '她會繼續做這個階段' : '同意了，她會繼續做').then(() => setNote(''))
-                      }
+                      onClick={() => {
+                        // 最後一個階段的同意＝整個委託結案（11/9：之前不小心按到就結案了）
+                        const last = c.waiting?.kind === 'stage' && !c.waiting.stuck && (c.waiting.stage ?? c.stage) >= c.stages.length - 1;
+                        if (last && !window.confirm('這是最後一個階段，同意之後整個委託就結案了。確定？')) return;
+                        call(`/api/commissions/${c.id}/checkpoint`, 'POST', { decision: 'approve', note }, c.waiting?.stuck ? '她會繼續做這個階段' : last ? '委託結案了' : '同意了，她會繼續做').then(() => setNote(''));
+                      }}
                       className="px-2 py-0.5 rounded bg-emerald-700/80 hover:bg-emerald-600"
                     >
                       {c.waiting.stuck ? '讓她繼續做' : '同意'}
@@ -418,6 +421,27 @@ export const CommissionPanel: React.FC = () => {
                     <p key={i} className="text-[10px] text-slate-400">{n.slice(0, 300)}</p>
                   ))}
                 </details>
+              )}
+
+              {(c.status === 'done' || c.status === 'dropped') && (
+                <div className="rounded bg-slate-900/60 border border-slate-700 p-1.5 space-y-1">
+                  <p className="text-[10px] text-slate-300">{c.status === 'done' ? '這個委託已經結案了。' : '這個委託取消了。'}想讓她繼續做（回到最後一個階段，工作區和筆記都沿用），寫下要她改什麼再按「重新打開」。</p>
+                  <textarea
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    rows={2}
+                    placeholder="例如：按立即執行之後什麼都沒變，產生器要真的每次產生不同的生物"
+                    className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1"
+                  />
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => call(`/api/commissions/${c.id}/reopen`, 'POST', { note }, '重新打開了，她會接著做').then(() => setNote(''))}
+                    className="px-2 py-0.5 rounded bg-purple-800/80 hover:bg-purple-700"
+                  >
+                    重新打開
+                  </button>
+                </div>
               )}
 
               {!c.waiting && c.status !== 'done' && c.status !== 'dropped' && (

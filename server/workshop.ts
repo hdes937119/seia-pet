@@ -183,6 +183,7 @@ ${notes.length ? `\n西雅的工坊筆記（以前做作品時踩過的坑，這
 - 這條比西雅的想法優先：作品打開時，連網（fetch、XMLHttpRequest、WebSocket）、外部網址的圖片／腳本／樣式一律會被擋，畫面會變空白或破圖。她的想法如果要求這些，請改用直接寫在檔案裡的資料、或用 Canvas／SVG／CSS 畫出來，並在最後那句話裡誠實說出哪一部分因為不能連網而沒照做。不要用假資料假裝連網成功。
 - 畫面大小要能放進約 400×400 的框裡，會自動縮放；介面文字用繁體中文；用滑鼠或觸控就能操作。
 - 如果是遊戲：要有清楚的開始、規則說明（一兩句）、輸贏或分數，以及「再玩一次」。
+- 如果適合當成主人桌上的小配件（鬧鐘、計時器、提醒、小工具），可以用 window.seia（只有被主人裝成配件、而且給了權限時才有；平常打開時沒有，所以一定要先檢查 if (window.seia)，沒有時作品也要能正常顯示）：await seia.say('文字')、await seia.notify('標題', '內容')、await seia.remind({ inMinutes: 25, text: '休息一下' }) 或 { at: '2026-11-09T08:00:00+08:00', text: '起床', repeat: 'daily' }（時間到由桌寵提醒，配件關掉也會響）、await seia.reminders()、await seia.cancelReminder(id)。每個都回傳 { ok, reason? }。沙盒裡不能用 localStorage，要記住的提醒交給 seia.remind。
 - 程式要能直接用瀏覽器打開就跑，不要有任何錯誤；寫完自己檢查一次。
 - 不要讀寫目前資料夾以外的任何地方。
 完成後只用一句話（繁體中文、30 字內）說明你做了什麼。`;
@@ -790,7 +791,7 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
 
   /** 給自主行動的工具說明 */
   function describeTool(): string {
-    return `做網頁小作品：在跟電腦隔開的工坊裡，請工坊助手做一個單一 HTML 檔的小遊戲、小工具或互動小動畫（約 400×400）。作品是完全離線的：不能 fetch、不能連任何 API、不能載外部網址的圖片／腳本／字型（會被擋，畫面變空白或破圖）；需要外面的資料，就先用研究查好、把要用的文字或數字直接寫進 detail，需要圖就用程式畫或用畫室。真的非連網不可，就改成提案。做好後你會實際打開試玩、看截圖檢查。detail 寫成給助手的具體說明（做成什麼、怎麼玩、你想要的小細節）。options 給 {}。做好之後主人同意才會展示。今天已做好 ${todayCount()}／${dailyMax()} 件。${skillsText() ? `\n${skillsText()}` : ''}${
+    return `做網頁小作品：在跟電腦隔開的工坊裡，請工坊助手做一個單一 HTML 檔的小遊戲、小工具或互動小動畫（約 400×400）。作品是完全離線的：不能 fetch、不能連任何 API、不能載外部網址的圖片／腳本／字型（會被擋，畫面變空白或破圖）；需要外面的資料，就先用研究查好、把要用的文字或數字直接寫進 detail，需要圖就用程式畫或用畫室。真的非連網不可，就改成提案。做好後你會實際打開試玩、看截圖檢查。適合常駐在主人桌上的（鬧鐘、計時器、提醒…）做好之後可以申請裝成配件（研究、委託或聊天時用 propose_widget），配件能讓你說話、跳通知、設定時提醒。detail 寫成給助手的具體說明（做成什麼、怎麼玩、你想要的小細節）。options 給 {}。做好之後主人同意才會展示。今天已做好 ${todayCount()}／${dailyMax()} 件。${skillsText() ? `\n${skillsText()}` : ''}${
       deps.folders?.describeForSeia() ? `\n${deps.folders.describeForSeia()}（要用就在 options 填 "folders": "名字"，多個用逗號分開）` : ''
     }`;
   }

@@ -64,6 +64,7 @@ import { createToolbox } from './server/toolbox';
 import { isWorkshopMissing } from './server/winText';
 import { createHostActions, type ActionPlan } from './server/hostActions';
 import { createCommissions, defaultBudget, APPROVE_RE, NEGATE_RE, STOP_RE, PAUSE_RE, RESUME_RE, type Commission, type ProjectJob, type JobPlaytest } from './server/commission';
+import { createWidgets, type WidgetSource } from './server/widgets';
 
 /** 微表情：她回覆開頭的 <!--ACT:…--> */
 const PET_ACTS = ['eyeroll', 'sigh', 'nervous', 'shy', 'smirk'];
@@ -1040,7 +1041,7 @@ function describeMyRecentLines(hours = 6, n = 10): string {
 const chatToolsOn = () => process.env.CHAT_TOOLS !== 'false';
 const RULE10_MARKER = `10. **工坊**：只有主人「明確要你」在工坊做一個小遊戲、小工具或小動畫（例如「幫我做個打地鼠」「去工坊做一個…」）時，才在文末加隱藏標記 <!--WORK:{"title":"作品名（12 字內）","brief":"寫給工坊助手的具體說明：做成什麼樣子、怎麼玩、你想加的小細節（60～150 字）"}-->，回覆裡說你要去工坊做了。主人只是聊到、問你會不會，或是你自己想做，都不要加。工坊只能做單一網頁的小作品。畫圖（配件、表情、貼圖）目前不能從聊天直接叫你畫，但你有自己的時間時可以自己決定要不要畫；安裝軟體或插件目前都不行，主人要的是這些就照實說。背景資料寫工坊現在不能開工時，也照實說，不要加標記。`;
 const RULE12_MARKER = `12. **主人的委託**：主人明確要你做一個比較大、要花好幾天慢慢做的東西（例如「幫我做一個 PoE 通貨漲跌系統」「委託你做一個…工具」），不是單一網頁小作品時，在文末加 <!--COMMISSION:{"title":"委託名稱（12 字內）","direction":"主人要的東西，照主人的話寫清楚（目標、成品樣子、用途）","constraints":"主人說的限制（沒有就空字串）"}-->，回覆裡說你會先寫計畫給他看（不要假裝已經開始做）。主人只是聊到、問你做不做得到，不要加。背景資料有【主人的委託】時：主人對某個委託給意見、回覆你的報告，就在文末加 <!--CFEEDBACK:{"id":"委託 id","decision":"approve、changes、note、pause、resume 或 drop","note":"主人的意見，照他的意思寫清楚"}-->：approve＝主人明確同意正在等他回覆的計畫或階段成果；changes＝主人要你改；note＝其他意見；pause／resume／drop＝主人明確說暫停、繼續、不做了。不確定主人是不是同意，就用問的，不要加 approve。`;
-const RULE10_TOOLS = `10. **你的工具**：你手上有工具——開工坊小作品（start_workshop_work）、開委託（create_commission）、回覆委託（reply_commission）、查委託進度（commission_status）、在主人電腦上做事的行動提案（plan_actions）、看和跑你自己做的工具（my_tools、run_my_tool）。看主人這句話需不需要，自己決定用不用、用哪個；大部分聊天都不需要工具。不確定主人是不是要你動手，就先用一句話問他。用工具要等的（開委託、跑工具），先簡短說一聲再用。用完照工具回來的結果說，不要說還沒發生的事，也不要把工具回來的整段內容照貼。畫圖目前不能從聊天直接叫你畫；安裝軟體要用行動提案、要主人在電腦前同意。不要再寫 WORK、COMMISSION、CFEEDBACK 這些舊的隱藏標記。`;
+const RULE10_TOOLS = `10. **你的工具**：你手上有工具——開工坊小作品（start_workshop_work）、開委託（create_commission）、回覆委託（reply_commission）、查委託進度（commission_status）、在主人電腦上做事的行動提案（plan_actions）、看和跑你自己做的工具（my_tools、run_my_tool）、把做好的作品申請裝成主人桌寵上的配件（propose_widget）。看主人這句話需不需要，自己決定用不用、用哪個；大部分聊天都不需要工具。不確定主人是不是要你動手，就先用一句話問他。用工具要等的（開委託、跑工具），先簡短說一聲再用。用完照工具回來的結果說，不要說還沒發生的事，也不要把工具回來的整段內容照貼。畫圖目前不能從聊天直接叫你畫；安裝軟體要用行動提案、要主人在電腦前同意。不要再寫 WORK、COMMISSION、CFEEDBACK 這些舊的隱藏標記。`;
 const RULE12_TOOLS = `12. **委託的同意**：主人要明確說同意、或已經從你列的選項裡選好，才用 reply_commission 的 approve；程式也會再核對主人的原話。主人還在挑、還在問，就繼續聊或列選項，不要急著開委託或同意。`;
 
 function buildSystemPrompt(
@@ -2705,6 +2706,21 @@ const RESEARCH_TOOLS = [
     },
   },
   {
+    name: 'propose_widget',
+    description:
+      '申請把你做好的工坊作品或委託網頁裝成「配件」放進主人的桌寵（鬧鐘、計時器、提醒小工具…），主人在設定面板同意才會裝。perms：say（讓你在桌面上說一句話）、notify（Windows 通知）、remind（定時提醒，配件關著也會響）；只要真的用得到的，而且作品程式裡要用 window.seia 才用得到。source＝作品 id（w-…）、委託 id（c-…）或名字。',
+    parametersJsonSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string' },
+        title: { type: 'string' },
+        why: { type: 'string' },
+        perms: { type: 'array', items: { type: 'string', enum: ['say', 'notify', 'remind'] } },
+      },
+      required: ['source', 'why'],
+    },
+  },
+  {
     name: 'finish_cycle',
     description: '這一輪告一段落（查到了想查的、在等實驗結果、或累了）。summary：這一輪做了什麼、發現什麼。',
     parametersJsonSchema: { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] },
@@ -2771,8 +2787,13 @@ async function runResearchTool(p: Project, name: string, args: any): Promise<str
       research.append(p.id, 'try', `在工坊實驗室開始執行「${String(a.title).slice(0, 30)}」：${String(a.task).slice(0, 300)}`);
       return '實驗室開始跑了，大概要幾分鐘。結果會自動記進筆記，下一輪看得到。';
     }
+    case 'propose_widget': {
+      const out = proposeWidget(a, `研究「${p.title}」`);
+      research.append(p.id, 'proposal', `申請配件：${String(a.title || a.source || '').slice(0, 30)}：${out.slice(0, 200)}`);
+      return out;
+    }
     case 'my_tools':
-      return toolbox.describe(20) || '工具箱還是空的（委託做出能直接執行的工具之後，就會出現在這裡）。';
+      return [toolbox.describe(20) || '工具箱還是空的（委託做出能直接執行的工具之後，就會出現在這裡）。', widgets.describe()].filter(Boolean).join('\n');
     case 'run_my_tool': {
       const out = await toolbox.run(String(a.tool || ''), `研究「${p.title}」`);
       if (a.note) toolbox.setNote(String(a.tool || ''), String(a.note));
@@ -3202,6 +3223,67 @@ function startResearch(req: { project?: string; title: string; question: string;
 }
 
 /* ===== 主人的委託（server/commission.ts，11/6）：聊天交代 → 她寫計畫 → 主人同意 → 一階段一階段做、每階段報告 ===== */
+/** 配件（11/9）：她做的作品裝進桌寵、受限的 window.seia 對講機 */
+function resolveWidgetSource(ref: string): null | { source: WidgetSource; title: string; dir: string } {
+  const r = String(ref || '').trim();
+  if (!r) return null;
+  const fromWork = (wk: Work | undefined) => {
+    if (!wk || !wk.entry || !['done', 'approved'].includes(wk.status) || wk.superseded) return null;
+    return workshop.filePath(wk.id, wk.entry) ? { source: { kind: 'work' as const, id: wk.id, entry: wk.entry }, title: wk.title, dir: path.join(DATA_DIR, 'workshop', wk.id) } : null;
+  };
+  const fromCommission = (c: Commission | undefined) => {
+    if (!c) return null;
+    const page = commissions.pickPage(c);
+    return page && commissions.wsFile(c.id, page) ? { source: { kind: 'commission' as const, id: c.id, entry: page }, title: c.tool?.title || c.title, dir: path.join(DATA_DIR, 'commissions', c.id, 'ws') } : null;
+  };
+  if (/^w-[\d-]+$/.test(r)) return fromWork(workshop.get(r));
+  if (/^c-[\d-]+$/.test(r)) return fromCommission(commissions.get(r));
+  const works = (workshop.snapshot().works as Work[]).filter((x) => x.entry && ['done', 'approved'].includes(x.status) && !x.superseded);
+  const byName = works.find((x) => x.title === r) || works.find((x) => x.title.includes(r) || r.includes(x.title));
+  if (byName) return fromWork(byName);
+  const cs = commissions.snapshot().commissions as Commission[];
+  const c = cs.find((x) => x.title === r || x.tool?.title === r) || cs.find((x) => x.title.includes(r) || (x.tool?.title || '').includes(r) || r.includes(x.title));
+  return fromCommission(c ? commissions.get(c.id) : undefined);
+}
+const widgets = createWidgets(DATA_DIR, {
+  resolve: (ref) => resolveWidgetSource(ref),
+  sourceDir: (src) => (src.kind === 'work' ? path.join(DATA_DIR, 'workshop', src.id) : path.join(DATA_DIR, 'commissions', src.id, 'ws')),
+  log: (m) => console.log(m),
+});
+const NOTIFY_URL = `http://127.0.0.1:${Number(process.env.PLAYTEST_PORT) || 3002}/notify`;
+/** 請桌寵主程式跳 Windows 通知（主程式沒開就算了） */
+async function desktopNotify(title: string, body: string) {
+  try {
+    await fetch(NOTIFY_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Gemini-Pet': '1' }, body: JSON.stringify({ title, body }), signal: AbortSignal.timeout(5000) });
+  } catch {
+    // 主程式沒開
+  }
+}
+/** 她申請配件（研究、委託、聊天共用） */
+function proposeWidget(a: any, from: string): string {
+  const r = widgets.propose({ source: String(a?.source || ''), title: String(a?.title || ''), why: String(a?.why || ''), perms: Array.isArray(a?.perms) ? a.perms : [], from });
+  if (!r.ok || !r.widget) return `沒申請成：${r.reason}`;
+  if (eventClients.size) pushEvent('pet-says', { text: `主人～我想把「${r.widget.title}」裝成配件，去設定面板看看喵`.slice(0, 60), emotion: 'happy' });
+  return `申請送出了（${r.widget.id}「${r.widget.title}」，權限：${r.widget.perms.join('、') || '不用'}）。主人在設定面板「探索 → 西雅的配件」按安裝才會裝；裝好後在圓形選單「配件」打開。`;
+}
+/** 到時間的提醒：桌面上她說一聲＋Windows 通知；桌寵畫面沒開就走 LINE */
+async function widgetReminderTick() {
+  for (const r of widgets.due()) {
+    const text = `⏰ ${r.text}`;
+    console.log(`[配件] 提醒時間到（${r.widgetTitle}）：${r.text}`);
+    if (eventClients.size) {
+      pushEvent('pet-says', { text: text.slice(0, 80), emotion: 'happy' });
+      void desktopNotify(`西雅的提醒（${r.widgetTitle}）`, r.text);
+    } else {
+      const cfg = lineConfig();
+      if (cfg) {
+        void pushToOwner(cfg, [{ type: 'text', text: `${text}（${r.widgetTitle}）` }], false);
+        appendLineHistory('pet', text);
+      }
+    }
+  }
+}
+
 const commissions = createCommissions(DATA_DIR, {
   distro: process.env.WORKSHOP_DISTRO || 'seia-workshop',
   proxyFile: path.resolve(__dirname, 'scripts', 'workshop', 'gemini-proxy.mjs'),
@@ -3334,8 +3416,10 @@ ${k ? `正在等主人回覆（${k.kind === 'plan' ? '計畫' : `第 ${(k.stage 
           return `行動提案送出了（${plan.id}），程式檢查過的步驟：\n${plan.steps.map((s, i) => `${i + 1}. ${s.check || s.type}${s.warn ? `（⚠️ ${s.warn}）` : ''}`).join('\n')}\n主人要在電腦前打開設定面板「探索 → 行動提案」按同意才會執行。照實跟主人說。`;
         return `行動提案檢查沒過，主人還看不到：\n${(plan.problems || []).join('\n')}\n照實跟主人說哪裡卡住（例如找不到這個套件），可以問他正確的名稱。`;
       }
+      case 'propose_widget':
+        return `${proposeWidget(a, ctx.via === 'line' ? 'LINE 聊天' : '聊天')}\n照實跟主人說，不要說已經裝好了。`;
       case 'my_tools':
-        return toolbox.describe(20) || '工具箱還是空的（委託做出能直接執行的工具之後才會有）。';
+        return [toolbox.describe(20) || '工具箱還是空的（委託做出能直接執行的工具之後才會有）。', widgets.describe()].filter(Boolean).join('\n');
       case 'run_my_tool': {
         const out = await toolbox.run(String(a.tool || ''), ctx.via === 'line' ? 'LINE 聊天' : '聊天');
         if (a.note) toolbox.setNote(String(a.tool || ''), String(a.note));
@@ -3577,7 +3661,7 @@ function handleCommissionMarkers(raw: string, userText: string, via: 'desktop' |
 }
 
 const COMMISSION_TOOLS = [
-  ...RESEARCH_TOOLS.filter((t) => ['web_search', 'read_page', 'browse', 'notebook_search', 'notebook_read', 'write_note', 'plan_actions', 'revise_actions', 'my_tools', 'run_my_tool', 'propose', 'finish_cycle'].includes(t.name)),
+  ...RESEARCH_TOOLS.filter((t) => ['web_search', 'read_page', 'browse', 'notebook_search', 'notebook_read', 'write_note', 'plan_actions', 'revise_actions', 'my_tools', 'run_my_tool', 'propose', 'propose_widget', 'finish_cycle'].includes(t.name)),
   {
     name: 'project_work',
     description:
@@ -3899,6 +3983,42 @@ async function commissionTick() {
   }
 }
 
+app.use('/api/widgets', (req, res, next) => {
+  if (req.method !== 'GET' && !req.get('X-Gemini-Pet')) return res.status(403).json({ ok: false, reason: '缺少 X-Gemini-Pet 標頭' });
+  next();
+});
+app.get('/api/widgets', (_req: Request, res: Response) => res.json(widgets.snapshot()));
+app.post('/api/widgets/:id/decide', (req: Request, res: Response) => {
+  const r = widgets.decide(String(req.params.id), req.body?.approve === true, String(req.body?.note || ''));
+  if (r.ok && r.widget) {
+    const w = r.widget;
+    autonomy.addLesson('workshop', w.title, w.status === 'installed' ? `主人把「${w.title}」裝成配件了` : `主人沒有把「${w.title}」裝成配件${w.note ? `：${w.note}` : ''}`);
+  }
+  res.json(r);
+});
+app.delete('/api/widgets/reminders/:rid', (req: Request, res: Response) => res.json({ ok: widgets.cancelReminder(String(req.params.rid)) }));
+app.delete('/api/widgets/:id', (req: Request, res: Response) => res.json({ ok: widgets.remove(String(req.params.id)) }));
+// 配件的檔案：跟工坊作品一樣的離線 CSP（只有已安裝、內容沒被改過的才打得開）
+app.get(/^\/api\/widgets\/(g-[\d-]+)\/f\/(.*)$/, (req: Request, res: Response) => {
+  const r = widgets.pageFile(String((req.params as any)[0]), decodeURIComponent(String((req.params as any)[1] || '')));
+  if (!r.path) return res.status(403).type('text/html; charset=utf-8').send(`<meta charset="utf-8"><p style="font-family:sans-serif;padding:16px">${r.reason || '打不開'}</p>`);
+  res.setHeader('Content-Security-Policy', "sandbox allow-scripts; default-src 'self' data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src 'none'; form-action 'none'");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(r.path);
+});
+// 對講機：配件視窗呼叫 window.seia.* → 桌寵主程式轉過來
+app.post('/api/widgets/:id/bridge', (req: Request, res: Response) => {
+  const r = widgets.bridge(String(req.params.id), String(req.body?.action || ''), req.body?.args);
+  if (r.ok && r.say) {
+    if (eventClients.size) pushEvent('pet-says', { text: r.say, emotion: 'happy' });
+    console.log(`[配件] 「${widgets.get(String(req.params.id))?.title}」讓她說：${r.say}`);
+  }
+  if (r.ok && r.notify) void desktopNotify(r.notify.title, r.notify.body);
+  const { say: _s, notify: _n, ...out } = r;
+  res.json(out);
+});
+
 app.use('/api/commissions', (req, res, next) => {
   if (req.method !== 'GET' && !req.get('X-Gemini-Pet')) return res.status(403).json({ ok: false, reason: '缺少 X-Gemini-Pet 標頭' });
   next();
@@ -3923,6 +4043,11 @@ app.post('/api/commissions/:id/checkpoint', async (req: Request, res: Response) 
   if (!c) return res.status(404).json({ ok: false });
   const decision = req.body?.decision === 'approve' ? 'approve' : 'changes';
   res.json(await commissionAnswered(c, decision, String(req.body?.note || ''), 'panel', { force: req.body?.force === true }));
+});
+app.post('/api/commissions/:id/reopen', (req: Request, res: Response) => {
+  const c = commissions.get(String(req.params.id));
+  if (!c) return res.status(404).json({ ok: false });
+  res.json(commissions.reopen(c, String(req.body?.note || ''), 'panel'));
 });
 let commissionPlaytesting = false;
 app.post('/api/commissions/:id/playtest', async (req: Request, res: Response) => {
@@ -6354,6 +6479,7 @@ async function startServer() {
   recall.appendMany(lineStore.history().map((h) => ({ role: h.role === 'user' ? ('user' as const) : ('pet' as const), text: h.content, at: h.at, ch: 'line' as const })));
   // 她在忙：每分鐘看一次時間到了沒、要不要去忙
   setInterval(() => void busyTick(), 60 * 1000);
+  setInterval(() => void widgetReminderTick(), 30 * 1000);
   // 話頭：主人安靜一陣子後，她可能自己補一句（每 30 秒看一次）
   setInterval(() => maybeFollowUp(), 30 * 1000);
   // 工坊：心血來潮自己做小作品（每 20 分鐘擲一次骰子）

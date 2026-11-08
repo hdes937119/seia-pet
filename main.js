@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, powerMonitor, shell, session } from 'electron';
+import { app, BrowserWindow, ipcMain, desktopCapturer, screen, globalShortcut, powerMonitor, shell, session, Notification } from 'electron';
 import path from 'path';
 import http from 'http';
 import fs from 'fs';
@@ -156,6 +156,72 @@ function notifyYouTubeLogin(loggedIn) {
 
 // 西雅工坊的作品：開成獨立、可調整大小的視窗（沙盒、沒有 preload、不能導到別的地方）
 const workWindows = new Map();
+// 西雅的配件（11/9）：主人安裝過的作品，開成小視窗；多一條受限的 window.seia（widget-preload.cjs → 這裡 → 後端檢查權限）
+const widgetWindows = new Map(); // widgetId → BrowserWindow
+const widgetBySender = new Map(); // webContents.id → widgetId
+ipcMain.handle('open-widget', async (_event, id, title) => {
+    const widgetId = String(id || '');
+    if (!/^g-[\d-]+$/.test(widgetId)) return false;
+    const existing = widgetWindows.get(widgetId);
+    if (existing && !existing.isDestroyed()) {
+        existing.focus();
+        return true;
+    }
+    let entry = 'index.html';
+    try {
+        const r = await fetch(`${APP_URL}/api/widgets`);
+        const j = await r.json();
+        const w = (j.widgets || []).find((x) => x.id === widgetId);
+        if (!w) return false;
+        entry = String(w.source.entry || 'index.html');
+    } catch {
+        return false;
+    }
+    const prefix = `${APP_URL}/api/widgets/${widgetId}/f/`;
+    const win = new BrowserWindow({
+        width: 420,
+        height: 480,
+        minWidth: 200,
+        minHeight: 160,
+        title: `西雅的配件：${String(title || '配件').slice(0, 30)}`,
+        autoHideMenuBar: true,
+        backgroundColor: '#ffffff',
+        webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            partition: 'seia-widgets',
+            preload: path.join(__dirname, 'widget-preload.cjs'),
+        },
+    });
+    const wcId = win.webContents.id;
+    widgetBySender.set(wcId, widgetId);
+    win.loadURL(prefix + entry.split('/').map(encodeURIComponent).join('/'));
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    win.webContents.on('will-navigate', (event, url) => {
+        if (!url.startsWith(prefix)) event.preventDefault();
+    });
+    win.on('page-title-updated', (event) => event.preventDefault());
+    win.on('closed', () => {
+        widgetWindows.delete(widgetId);
+        widgetBySender.delete(wcId);
+    });
+    widgetWindows.set(widgetId, win);
+    return true;
+});
+ipcMain.handle('widget-bridge', async (event, action, args) => {
+    const widgetId = widgetBySender.get(event.sender.id);
+    if (!widgetId) return { ok: false, reason: '這個視窗不是配件' };
+    try {
+        const body = JSON.stringify({ action: String(action || ''), args: args && typeof args === 'object' ? args : {} });
+        if (body.length > 4000) return { ok: false, reason: '內容太長' };
+        const r = await fetch(`${APP_URL}/api/widgets/${widgetId}/bridge`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Gemini-Pet': '1' }, body });
+        return await r.json();
+    } catch {
+        return { ok: false, reason: '桌寵後端沒回應' };
+    }
+});
+
 ipcMain.handle('open-workshop-work', (_event, id, entry, title) => {
     const workId = String(id || '');
     const file = String(entry || 'index.html');
@@ -599,6 +665,24 @@ function startPlaytestServer() {
         if (req.method !== 'POST' || req.headers['x-gemini-pet'] !== '1' || req.headers.origin) return reply(403, { ok: false });
         // 西雅的瀏覽器（同一個只聽 127.0.0.1 的通道）
         if (req.url === '/browse') return handleBrowse(req, reply);
+        // 配件的通知、提醒（11/9）：後端檢查過權限才叫這裡
+        if (req.url === '/notify') {
+            let nb = '';
+            req.on('data', (c) => {
+                nb += c;
+                if (nb.length > 2000) req.destroy();
+            });
+            req.on('end', () => {
+                try {
+                    const j = JSON.parse(nb || '{}');
+                    if (Notification.isSupported()) new Notification({ title: String(j.title || '西雅').slice(0, 40), body: String(j.body || '').slice(0, 200) }).show();
+                    reply(200, { ok: true });
+                } catch {
+                    reply(400, { ok: false });
+                }
+            });
+            return;
+        }
         if (req.url !== '/playtest') return reply(404, { ok: false });
         let body = '';
         req.on('data', (c) => {

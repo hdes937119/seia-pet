@@ -88,6 +88,21 @@ export const CHAT_TOOL_DECLS = [
     },
   },
   {
+    name: 'propose_widget',
+    description:
+      '申請把你做好的工坊作品或委託網頁「裝成配件」，放進主人的桌寵（圓形選單「配件」），像鬧鐘、計時器、提醒小工具。主人在設定面板同意才會裝。配件可以要的權限：say（讓你在桌面上說一句話）、notify（Windows 通知）、remind（定時提醒，時間到你會提醒主人）。只要真的用得到的權限。作品要先做好、而且程式裡用 window.seia 才能用這些權限（沒用的話它就只是一個小視窗）。',
+    parametersJsonSchema: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: '作品 id（w-…）、委託 id（c-…），或作品／委託的名字' },
+        title: { type: 'string', description: '配件名稱（10 字內）' },
+        why: { type: 'string', description: '為什麼適合當配件、主人怎麼用（80 字內）' },
+        perms: { type: 'array', items: { type: 'string', enum: ['say', 'notify', 'remind'] } },
+      },
+      required: ['source', 'why'],
+    },
+  },
+  {
     name: 'my_tools',
     description: '看你的工具箱：你自己做出來、可以直接跑的工具（不花 AI 額度）。想到「我好像做過能做這件事的工具」時先看一下。',
     parametersJsonSchema: { type: 'object', properties: {} },

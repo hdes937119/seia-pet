@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   // 西雅工坊的作品：開成可以調整大小的獨立視窗
   openWorkshopWork: (id, entry, title) => ipcRenderer.invoke('open-workshop-work', id, entry, title),
+  // 西雅的配件（主人安裝過的作品）：開成小視窗
+  openWidget: (id, title) => ipcRenderer.invoke('open-widget', id, title),
   // 語音輸入全域熱鍵：回傳取消訂閱的函式
   getVoiceHotkey: () => ipcRenderer.invoke('get-voice-hotkey'),
   onVoiceHotkey: (callback) => {

@@ -193,6 +193,7 @@ ${detail ? `西雅的說明：${detail}\n` : ''}
 - 只讀寫目前資料夾。不要去讀家目錄設定、/proc、環境變數或任何金鑰。
 - 誠實：只寫程式真的跑出來的結果；抓不到、跑不出來就照實寫，不要編數字、不要用假資料代替。
 - 收集到的歷史資料放在 data/ 底下（例如 data/history/日期.json），之後每次執行要能累積，不要覆蓋掉舊資料。整個工作區不要超過 20MB。
+- 網頁可以用 window.seia（只有被主人裝成配件、而且給了權限時才有；平常打開時沒有，所以一定要先檢查 if (window.seia)，沒有時作品也要能正常顯示）：await seia.say('文字')、await seia.notify('標題', '內容')、await seia.remind({ inMinutes: 25, text: '休息一下' }) 或 { at: '2026-11-09T08:00:00+08:00', text: '起床', repeat: 'daily' }（時間到由桌寵提醒，配件關掉也會響）、await seia.reminders()、await seia.cancelReminder(id)。每個都回傳 { ok, reason? }。沙盒裡不能用 localStorage，要記住的提醒交給 seia.remind。
 - 如果做出了「主人可以直接執行的工具」，在工作區根目錄寫 TOOL.json：
   {"title":"工具名稱","desc":"一句話說明","run":"在工作區根目錄執行的指令（例如 python3 tool.py）","report":"跑完會更新的報告檔（例如 out/REPORT.md）","page":"跑完會更新的網頁（例如 out/index.html，可省略）","schedule_hours":24,"timeout_sec":120}
   這個指令之後會在沒有 AI 的情況下由程式直接執行（可以連網、只能寫工作區），所以要能自己跑完、出錯時印出清楚的訊息、120 秒內結束。page 會在離線的沙盒裡打開：資料要直接寫進那個 HTML（不能 fetch、不能用 CDN）。schedule_hours 是建議多久自動跑一次（0＝不用自動跑）。
@@ -472,6 +473,23 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
     touch(c);
     log(`[委託] 「${c.title}」主人${continued ? '回覆了卡住的報告（當成繼續做這個階段）' : decision === 'approve' ? '同意了' : '要修改'}（${via}）${note ? `：${note.slice(0, 60)}` : ''}`);
     return { ok: true, finished, continued };
+  }
+
+  /** 主人把結案（或取消）的委託重新打開：回到最後一個階段繼續做（11/9） */
+  function reopen(c: Commission, note: string, via: string): { ok: boolean; reason?: string } {
+    if (c.status !== 'done' && c.status !== 'dropped') return { ok: false, reason: '這個委託還沒結案' };
+    if (!c.stages.length) return { ok: false, reason: '這個委託沒有階段' };
+    const i = Math.min(Math.max(c.stage, 0), c.stages.length - 1);
+    c.stage = i;
+    c.stages[i].status = 'doing';
+    c.status = 'active';
+    for (const k of c.checkpoints) if (k.status === 'waiting') k.status = 'changes';
+    c.feedback.push({ at: Date.now(), text: `（主人把結案的委託重新打開，第 ${i + 1} 階段「${c.stages[i].title}」繼續做）${String(note || '').trim().slice(0, 600)}`, via });
+    c.nudgedAt = Date.now();
+    writePlanFile(c);
+    touch(c);
+    log(`[委託] 「${c.title}」主人重新打開了（第 ${i + 1} 階段）${note ? `：${note.slice(0, 60)}` : ''}`);
+    return { ok: true };
   }
 
   function addFeedback(c: Commission, text: string, via: string) {
@@ -826,6 +844,7 @@ ${k ? `⏳ 正在等主人回覆的檢查點（${k.kind === 'plan' ? '計畫' : 
     setPlan,
     addCheckpoint,
     answer,
+    reopen,
     addFeedback,
     setStatus,
     takeNewFeedback,

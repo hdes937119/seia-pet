@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { BookOpen, Film, Settings2, Monitor, MessageCircle, Mic, Music2 } from 'lucide-react';
+import { BookOpen, Film, Settings2, Monitor, MessageCircle, Mic, Music2, Puzzle } from 'lucide-react';
 import {
   PersonalityConfig,
   MemoryKeyword,
@@ -1071,6 +1071,23 @@ export default function App() {
       icon: <Monitor className="w-5 h-5" />,
       active: isAutoTracking,
       onSelect: () => openSettings('screen'),
+    },
+    {
+      // 西雅的配件（11/9）：只裝了一個就直接打開，其他情況打開設定面板的配件區
+      id: 'widgets',
+      label: '配件',
+      icon: <Puzzle className="w-5 h-5" />,
+      onSelect: () => {
+        fetch('/api/widgets')
+          .then((r) => r.json())
+          .then((j) => {
+            const list = (j.widgets || []).filter((w: any) => w.status === 'installed');
+            const api = (window as any).electronAPI;
+            if (list.length === 1 && typeof api?.openWidget === 'function') api.openWidget(list[0].id, list[0].title);
+            else openSettings('explore');
+          })
+          .catch(() => openSettings('explore'));
+      },
     },
     {
       id: 'music',
