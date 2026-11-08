@@ -325,7 +325,16 @@ export const CommissionPanel: React.FC = () => {
                   </div>
                   {c.tool.page && (
                     <div className="flex gap-1.5">
-                      <button type="button" onClick={() => setShowPage(!showPage)} className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // 在桌寵（Electron）裡開成獨立、可調整大小的視窗；在瀏覽器裡才用面板裡的小窗
+                          const api = (window as any).electronAPI;
+                          if (typeof api?.openWorkshopWork === 'function') api.openWorkshopWork(c.id, c.tool!.page, c.tool!.title);
+                          else setShowPage(!showPage);
+                        }}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]"
+                      >
                         {showPage ? '收起網頁' : '看網頁'}
                       </button>
                       <button

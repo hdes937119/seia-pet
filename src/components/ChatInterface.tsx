@@ -100,11 +100,20 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // 11/8：對話很長時，打開聊天框只畫最近 SHOW_STEP 則（舊的按「顯示更早的」再載入；記錄本身都還在）
+  const SHOW_STEP = 60;
+  const [showCount, setShowCount] = useState(SHOW_STEP);
+  const hiddenCount = Math.max(0, messages.length - showCount);
+  const shownMessages = hiddenCount ? messages.slice(-showCount) : messages;
+  // 第一次打開直接跳到最底（不要平滑捲動，不然要從最上面滑一大段）
+  const firstScrollRef = useRef(true);
 
   // Auto scroll to latest message（串流中逐字更新時用 auto，避免平滑捲動一直排隊造成抖動）
   const lastMsg = messages[messages.length - 1];
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: lastMsg?.isStreaming ? 'auto' : 'smooth' });
+    const instant = firstScrollRef.current || lastMsg?.isStreaming;
+    firstScrollRef.current = false;
+    messagesEndRef.current?.scrollIntoView({ behavior: instant ? 'auto' : 'smooth' });
   }, [messages, isStreamingOrWaiting, lastMsg?.isStreaming]);
 
   const handleSend = async (e?: React.FormEvent) => {
@@ -213,7 +222,18 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           chatStyle === 'line' ? 'bg-[#181D24]' : 'bg-slate-950/60'
         }`}
       >
-        {messages.map((msg) => {
+        {hiddenCount > 0 && (
+          <div className="flex justify-center">
+            <button
+              type="button"
+              onClick={() => setShowCount((n) => n + SHOW_STEP)}
+              className="text-[11px] px-3 py-1 rounded-full bg-slate-800/80 text-slate-300 hover:bg-slate-700"
+            >
+              顯示更早的 {Math.min(SHOW_STEP, hiddenCount)} 則（還有 {hiddenCount} 則）
+            </button>
+          </div>
+        )}
+        {shownMessages.map((msg) => {
           const isUser = msg.role === 'user';
           return (
             <div

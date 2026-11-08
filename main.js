@@ -159,19 +159,23 @@ const workWindows = new Map();
 ipcMain.handle('open-workshop-work', (_event, id, entry, title) => {
     const workId = String(id || '');
     const file = String(entry || 'index.html');
-    if (!/^w-[\d-]+$/.test(workId) || file.includes('..') || /^[\\/]/.test(file)) return false;
+    // w- 工坊作品；c- 委託工作區的網頁（11/8：面板裡的小窗太小，也開成獨立視窗）
+    if (!/^[wc]-[\d-]+$/.test(workId) || file.includes('..') || /^[\\/]/.test(file)) return false;
+    const isCommission = workId.startsWith('c-');
     const existing = workWindows.get(workId);
     if (existing && !existing.isDestroyed()) {
+        // 委託的網頁可能剛被工具重新產生過：重新載入
+        if (isCommission) existing.webContents.reload();
         existing.focus();
         return true;
     }
-    const prefix = `${APP_URL}/api/workshop/${workId}/files/`;
+    const prefix = isCommission ? `${APP_URL}/api/commissions/${workId}/ws/` : `${APP_URL}/api/workshop/${workId}/files/`;
     const win = new BrowserWindow({
-        width: 560,
-        height: 600,
+        width: isCommission ? 960 : 720,
+        height: isCommission ? 720 : 720,
         minWidth: 240,
         minHeight: 240,
-        title: `西雅的工坊：${String(title || '作品').slice(0, 30)}`,
+        title: `${isCommission ? '西雅的委託' : '西雅的工坊'}：${String(title || '作品').slice(0, 30)}`,
         autoHideMenuBar: true,
         backgroundColor: '#ffffff',
         webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
