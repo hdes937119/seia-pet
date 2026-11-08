@@ -386,7 +386,9 @@ const busy = createBusy(DATA_DIR, {
   masterOffWork: (now) => {
     if (!worldEnabled()) return false;
     const p = presence.snapshot() as any;
-    return !isWorkTime(world.snapshot().schedule, now) && !presence.isAsleep(now) && !p.night && !p.nightShift;
+    // 11/8 修正：p.night 是「主人晚上最後一次在電腦前」的紀錄（給隔天起床用），第一次熬夜之後就一直有值，
+    // 之前拿來判斷害她從來沒自己去忙過；值夜要看 nightShift 還沒回來（back=false）
+    return !isWorkTime(world.snapshot().schedule, now) && !presence.isAsleep(now) && !(p.nightShift && !p.nightShift.back);
   },
   lastChatAt: () => lastDesktopChatAt,
   log: (msg) => console.log(msg),
