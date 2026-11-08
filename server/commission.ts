@@ -36,6 +36,8 @@ export interface Checkpoint {
   reply?: string;
   repliedAt?: number;
   via?: string;
+  /** 她自己說這個階段沒做成／卡住（11/8）：主人「同意」時不跳到下一階段，而是讓她繼續做 */
+  stuck?: boolean;
 }
 
 export interface Feedback {
@@ -79,6 +81,26 @@ export interface ProjectJob {
   result?: string;
   error?: string;
   usage?: { calls: number; prompt: number; cached: number; output: number; model: string; capped?: boolean };
+  /** 做出網頁的話：實際打開檢查的結果 */
+  playtest?: JobPlaytest;
+}
+
+/** 委託的網頁實際打開檢查（11/8）：試玩通道打開、她看截圖寫下看到什麼 */
+export interface JobPlaytest {
+  at: number;
+  page: string;
+  /** false＝沒打開成（試玩通道沒開） */
+  ok: boolean;
+  reason?: string;
+  errors: string[];
+  seen?: string;
+  problems?: string[];
+  untested?: string[];
+  /** 跟工坊助手 STEP_RESULT 的說法一致嗎 */
+  matches?: boolean;
+  /** 截圖檔名前綴（data/commissions/<id>/playtest/<shotKey>-<n>.png） */
+  shotKey?: string;
+  shots?: number;
 }
 
 export interface Commission {
@@ -106,6 +128,8 @@ export interface Commission {
   nudgedAt?: number;
   /** 排程連續失敗幾次（3 次就先關掉） */
   toolFails?: number;
+  /** 最近一次實際打開網頁檢查（工作做完自動，或主人在面板按） */
+  lastPlaytest?: JobPlaytest;
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -389,9 +413,9 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
     }
   }
 
-  function addCheckpoint(c: Commission, kind: Checkpoint['kind'], report: string, ask = ''): Checkpoint {
+  function addCheckpoint(c: Commission, kind: Checkpoint['kind'], report: string, ask = '', opts: { stuck?: boolean } = {}): Checkpoint {
     for (const k of c.checkpoints) if (k.status === 'waiting') k.status = 'changes';
-    const k: Checkpoint = { id: `k-${stamp()}`, at: Date.now(), kind, stage: kind === 'stage' ? c.stage : undefined, report: String(report || '').slice(0, 1200), ask: String(ask || '').slice(0, 300) || undefined, status: 'waiting' };
+    const k: Checkpoint = { id: `k-${stamp()}`, at: Date.now(), kind, stage: kind === 'stage' ? c.stage : undefined, report: String(report || '').slice(0, 1200), ask: String(ask || '').slice(0, 300) || undefined, status: 'waiting', stuck: kind === 'stage' && opts.stuck ? true : undefined };
     c.checkpoints.push(k);
     c.checkpoints = c.checkpoints.slice(-30);
     if (kind === 'plan') c.status = 'review';
@@ -402,14 +426,27 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
   }
 
   /** 主人回覆檢查點 */
-  function answer(c: Commission, decision: 'approve' | 'changes', note: string, via: string): { ok: boolean; reason?: string; finished?: boolean } {
+  function answer(
+    c: Commission,
+    decision: 'approve' | 'changes',
+    note: string,
+    via: string,
+    opts: { force?: boolean } = {}
+  ): { ok: boolean; reason?: string; finished?: boolean; continued?: boolean } {
     const k = waiting(c);
     if (!k) return { ok: false, reason: '現在沒有在等你回覆的檢查點' };
+    // 11/8：她報告「這個階段沒做成」時，主人說「好、繼續」＝繼續做這個階段，不是算它完成（之前第 2 階段就這樣被跳過）
+    // 主人在面板明確按「跳過這階段」才 force
+    let continued = false;
+    if (k.kind === 'stage' && k.stuck && decision === 'approve' && !opts.force) {
+      decision = 'changes';
+      continued = true;
+    }
     k.status = decision === 'approve' ? 'approved' : 'changes';
     k.reply = String(note || '').slice(0, 600) || undefined;
     k.repliedAt = Date.now();
     k.via = via;
-    if (note && note.trim()) c.feedback.push({ at: Date.now(), text: `${decision === 'approve' ? '（同意時說）' : '（要修改）'}${note.trim().slice(0, 600)}`, via });
+    if (note && note.trim()) c.feedback.push({ at: Date.now(), text: `${continued ? '（主人回覆你卡住的報告）' : decision === 'approve' ? '（同意時說）' : '（要修改）'}${note.trim().slice(0, 600)}`, via });
     let finished = false;
     if (k.kind === 'plan') {
       if (decision === 'approve') {
@@ -433,8 +470,8 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
     c.nudgedAt = Date.now();
     writePlanFile(c);
     touch(c);
-    log(`[委託] 「${c.title}」主人${decision === 'approve' ? '同意了' : '要修改'}（${via}）${note ? `：${note.slice(0, 60)}` : ''}`);
-    return { ok: true, finished };
+    log(`[委託] 「${c.title}」主人${continued ? '回覆了卡住的報告（當成繼續做這個階段）' : decision === 'approve' ? '同意了' : '要修改'}（${via}）${note ? `：${note.slice(0, 60)}` : ''}`);
+    return { ok: true, finished, continued };
   }
 
   function addFeedback(c: Commission, text: string, via: string) {
@@ -524,6 +561,47 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
   }
   function wsList(c: Commission): Array<{ path: string; bytes: number }> {
     return readDirEntries(wsDir(c.id), WS_SKIP).map((e) => ({ path: e.path, bytes: e.data.length })).slice(0, 300);
+  }
+  /** 要實際打開檢查的網頁：TOOL.json 的 page；沒有就 index.html；再沒有就工作區最上層第一個 .html */
+  function pickPage(c: Commission): string {
+    const has = (rel: string) => Boolean(rel && wsFile(c.id, rel));
+    if (c.tool?.page && has(c.tool.page)) return c.tool.page;
+    if (has('index.html')) return 'index.html';
+    try {
+      const top = fs.readdirSync(wsDir(c.id)).filter((n) => /\.html?$/i.test(n)).sort();
+      if (top.length) return top[0];
+    } catch {
+      // 沒有工作區
+    }
+    return '';
+  }
+  const playtestDir = (id: string) => path.join(root, id, 'playtest');
+  /** 存試玩截圖（不放進工作區，不會被送進工坊）；只留最近 15 張 */
+  function savePlaytestShots(c: Commission, key: string, shots: string[]): number {
+    const dir = playtestDir(c.id);
+    let n = 0;
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      for (const s of shots.slice(0, 3)) {
+        if (!s) continue;
+        n++;
+        fs.writeFileSync(path.join(dir, `${key}-${n}.png`), Buffer.from(s, 'base64'));
+      }
+      const all = fs
+        .readdirSync(dir)
+        .filter((x) => x.endsWith('.png'))
+        .map((x) => ({ x, t: fs.statSync(path.join(dir, x)).mtimeMs }))
+        .sort((a, b) => b.t - a.t);
+      for (const old of all.slice(15)) fs.unlinkSync(path.join(dir, old.x));
+    } catch (err: any) {
+      log(`[委託] 存試玩截圖失敗：${err?.message}`);
+    }
+    return n;
+  }
+  function playtestFile(id: string, name: string): string | null {
+    if (!get(id) || !/^c-[\d-]+$/.test(id) || !/^[\w-]+\.png$/.test(name)) return null;
+    const p = path.join(playtestDir(id), name);
+    return fs.existsSync(p) ? p : null;
   }
 
   /** 開工（不等做完；做完呼叫 onDone） */
@@ -762,6 +840,9 @@ ${k ? `⏳ 正在等主人回覆的檢查點（${k.kind === 'plan' ? '計畫' : 
     runningJob,
     readWs,
     wsFile,
+    pickPage,
+    savePlaytestShots,
+    playtestFile,
     describeForChat,
     snapshot,
     detail,

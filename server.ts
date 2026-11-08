@@ -63,7 +63,7 @@ import { CHAT_TOOL_DECLS, runToolLoopStream, runToolLoop, type ToolRunner } from
 import { createToolbox } from './server/toolbox';
 import { isWorkshopMissing } from './server/winText';
 import { createHostActions, type ActionPlan } from './server/hostActions';
-import { createCommissions, defaultBudget, APPROVE_RE, NEGATE_RE, STOP_RE, PAUSE_RE, RESUME_RE, type Commission, type ProjectJob } from './server/commission';
+import { createCommissions, defaultBudget, APPROVE_RE, NEGATE_RE, STOP_RE, PAUSE_RE, RESUME_RE, type Commission, type ProjectJob, type JobPlaytest } from './server/commission';
 
 /** 微表情：她回覆開頭的 <!--ACT:…--> */
 const PET_ACTS = ['eyeroll', 'sigh', 'nervous', 'shy', 'smirk'];
@@ -3300,6 +3300,7 @@ function chatToolRunner(ctx: { via: 'desktop' | 'line'; userText: string; recent
           const k = commissions.waiting(c);
           const r = await commissionAnswered(c, d, note, ctx.via);
           if (!r.ok) return `沒成功：${(r as any).reason || ''}`;
+          if ((r as any).continued) return '你那份報告是說這個階段沒做成／卡住，所以主人的回覆記成「繼續做這個階段」（不會跳到下一個階段），下一輪工作會照主人的話接著做。';
           if (d === 'approve')
             return (r as any).finished
               ? `「${c.title}」最後一個階段同意了，委託完成。`
@@ -3505,9 +3506,9 @@ ${COMMISSION_CAPABILITIES}
 }
 
 /** 主人回覆了檢查點（聊天、LINE、面板都走這裡） */
-async function commissionAnswered(c: Commission, decision: 'approve' | 'changes', note: string, via: string) {
+async function commissionAnswered(c: Commission, decision: 'approve' | 'changes', note: string, via: string, opts: { force?: boolean } = {}) {
   const k = commissions.waiting(c);
-  const r = commissions.answer(c, decision, note, via);
+  const r = commissions.answer(c, decision, note, via, opts);
   if (!r.ok) return r;
   if (k?.kind === 'plan' && decision === 'changes') void usageTask(commissionTask(c), () => planCommission(c));
   if (r.finished) await commissionNotify(`「${c.title}」完成了！`, `「${c.title}」全部的階段都完成了，謝謝主人一路幫我看～`, 'proud');
@@ -3584,8 +3585,12 @@ const COMMISSION_TOOLS = [
   {
     name: 'stage_report',
     description:
-      '跟主人報告這個階段的成果並等主人點頭（主人同意前不會往下一個階段）；卡住需要主人決定時也用它。summary＝做到什麼、實際跑出來的結果、主人怎麼用、還有什麼問題（誠實，300 字內）；ask＝要主人決定或回答的事（可省略）。',
-    parametersJsonSchema: { type: 'object', properties: { summary: { type: 'string' }, ask: { type: 'string' } }, required: ['summary'] },
+      '跟主人報告這個階段的成果並等主人點頭（主人同意前不會往下一個階段）；卡住需要主人決定時也用它。summary＝做到什麼、實際跑出來的結果、主人怎麼用、還有什麼問題（誠實，300 字內）；ask＝要主人決定或回答的事（可省略）；outcome＝done（這個階段的目標做到了，有實際證據）或 stuck（沒做到、卡住、要主人幫忙或決定）。',
+    parametersJsonSchema: {
+      type: 'object',
+      properties: { summary: { type: 'string' }, ask: { type: 'string' }, outcome: { type: 'string', enum: ['done', 'stuck'] } },
+      required: ['summary', 'outcome'],
+    },
   },
   {
     name: 'update_plan',
@@ -3635,11 +3640,13 @@ ${c.stages.map((s, i) => `${i + 1}. ${s.title}［${{ todo: '還沒開始', doing
 ${st ? `現在是第 ${c.stage + 1} 階段「${st.title}」：${st.goal}` : ''}
 ${fresh.length ? `主人新的意見（這一輪一定要回應、照著調整）：\n${fresh.map((f) => `- ${f}`).join('\n')}\n` : ''}${replies.length ? `主人對你報告的回覆：\n${replies.map((k) => `- ${k.status === 'approved' ? '同意' : '要修改'}${k.reply ? `：${k.reply}` : ''}`).join('\n')}\n` : ''}工坊助手的交接筆記（HANDOFF.md）：
 ${handoff || '（還沒有：工作區是空的，第一次開工）'}
-${lastJob ? `最近一次工坊工作「${lastJob.goal}」：${lastJob.status === 'done' ? '完成' : '失敗'}\n${(lastJob.result || lastJob.error || '').slice(0, 1500)}\n` : ''}${c.tool ? `已經有給主人的工具「${c.tool.title}」（${c.tool.run}）：${c.tool.desc}${c.runs.length ? `；最近執行：${c.runs.slice(-3).map((r) => `${new Date(r.at).toLocaleString('zh-TW', { hour12: false })} ${r.ok ? '成功' : `失敗：${r.output.slice(-150)}`}`).join('；')}` : ''}\n` : ''}今天這個委託花了 NT$${usage.taskCostTwd(commissionTask(c)).toFixed(1)}／${c.dailyBudgetTwd}。`;
+${lastJob ? `最近一次工坊工作「${lastJob.goal}」：${lastJob.status === 'done' ? '完成' : '失敗'}\n${(lastJob.result || lastJob.error || '').slice(0, 1500)}\n` : ''}${playtestLine(c)}${c.tool ? `已經有給主人的工具「${c.tool.title}」（${c.tool.run}）：${c.tool.desc}${c.runs.length ? `；最近執行：${c.runs.slice(-3).map((r) => `${new Date(r.at).toLocaleString('zh-TW', { hour12: false })} ${r.ok ? '成功' : `失敗：${r.output.slice(-150)}`}`).join('；')}` : ''}\n` : ''}今天這個委託花了 NT$${usage.taskCostTwd(commissionTask(c)).toFixed(1)}／${c.dailyBudgetTwd}。`;
   const extraSystem = `【這次是主人的委託，不是你自己的題目】主人的委託和意見最優先，照計畫一階段一階段做：
 - 寫程式、抓資料、做工具一律用 project_work（交給工坊助手在專案工作區做，程式和資料會保存下來）；一次給一個具體、做得完的目標，並把查到的網址、資料格式寫進 detail。先用 web_search、read_page 查好資料來源再開工，比較不會白做。
 - project_work 是非同步的：開工之後這一輪就用 finish_cycle 收尾，下一輪再看結果。
-- 這個階段的目標做到了（有實際跑出來的證據），就用 stage_report 跟主人報告、等主人點頭；沒做到不要報告完成。卡住需要主人決定（例如資料抓不到要換方向）也用 stage_report 問。
+- 這個階段的目標做到了（有實際跑出來的證據），就用 stage_report（outcome＝done）跟主人報告、等主人點頭；沒做到不要報告完成。卡住需要主人決定（例如資料抓不到要換方向）也用 stage_report 問，outcome 填 stuck。
+- 做出網頁時，程式會在工作做完後實際打開它試玩，你會看到「實際打開檢查」的結果（看到什麼、錯誤訊息、問題）。網頁長什麼樣、能不能用，只能照實際打開看到的說；工坊助手 STEP_RESULT 裡寫的網頁效果只是它的說法。看到錯誤或問題，先用 project_work 交代修正（把看到的問題寫進 detail），修好、再看過才報告完成。試玩只是隨便點幾下、聲音是關掉的，沒碰到的功能要照實說「還沒測到」。
+- 給主人的工具說「重新產生／更新資料」，就要真的每次跑出不同或更新的結果；只是把寫死的內容再寫一次不算。
 - 主人要你改計畫時用 update_plan。
 - 不要開跟委託無關的題目、不要做工坊小作品或畫圖。`;
   const runTool = async (name: string, a: any): Promise<string | null> => {
@@ -3654,11 +3661,22 @@ ${lastJob ? `最近一次工坊工作「${lastJob.goal}」：${lastJob.status ==
       case 'stage_report': {
         const summary = String(a.summary || '').trim();
         if (!summary) return '報告是空的。';
-        commissions.addCheckpoint(c, 'stage', summary, String(a.ask || ''));
+        const stuck = a.outcome ? String(a.outcome) === 'stuck' : STUCK_RE.test(summary);
+        // 有網頁的話，把實際打開檢查的結果附在報告後面（主人看得到證據，不只是她的說法）
+        const page = commissions.pickPage(c);
+        const t = latestPlaytest(c);
+        const evidence = !page
+          ? ''
+          : !t
+            ? `\n\n（程式附註：網頁「${page}」還沒實際打開檢查過）`
+            : t.ok
+              ? `\n\n（程式附註：她實際打開「${t.page}」看到：${(t.seen || '').slice(0, 150)}${t.errors.length ? `；瀏覽器回報 ${t.errors.length} 則錯誤／警告` : '；沒有錯誤訊息'}${t.matches === false ? '；跟工坊助手的報告不一致' : ''}）`
+              : `\n\n（程式附註：網頁沒能實際打開檢查：${t.reason || ''}）`;
+        commissions.addCheckpoint(c, 'stage', summary.slice(0, 1200 - evidence.length) + evidence, String(a.ask || ''), { stuck });
         research.append(p!.id, 'note', `跟主人報告第 ${c.stage + 1} 階段：${summary.slice(0, 500)}${a.ask ? `（問主人：${String(a.ask).slice(0, 200)}）` : ''}`);
         const head = `「${c.title}」第 ${c.stage + 1} 階段「${c.stages[c.stage]?.title || ''}」`;
         await commissionNotify(
-          `${head}有進度了，你看看～`,
+          stuck ? `${head}卡住了，想問你` : `${head}有進度了，你看看～`,
           `${head}的報告：\n${summary}${a.ask ? `\n\n想問你：${a.ask}` : ''}\n\n可以的話回我「可以」，要改哪裡直接說～${c.tool ? `\n（工具「${c.tool.title}」在設定面板「委託」可以直接執行）` : ''}`
         );
         return '報告送出了，主人同意之前先不往下做。這一輪可以收尾了。';
@@ -3720,7 +3738,111 @@ async function onCommissionJobDone(c: Commission, j: ProjectJob) {
     for (let i = 0; i < 2 && first + i * 780 < text.length; i++) research.append(pid, 'note', `（STEP_RESULT.md 續）${text.slice(first + i * 780, first + (i + 1) * 780)}`);
   }
   console.log(`[委託] 「${c.title}」工作完成，結果寫回筆記（${text.length} 字）`);
+  if (commissions.pickPage(c)) await commissionPlaytest(c, j);
   if (eventClients.size && proactive.request('discovery')) pushEvent('pet-says', { text: `委託「${c.title}」又往前做了一步喵`.slice(0, 50), emotion: 'happy' });
+}
+
+/** 卡住的報告（她沒填 outcome 時的備援判斷） */
+const STUCK_RE = /做不出|做不成|沒做成|沒做到|沒辦法完成|無法完成|壞掉|壞了|卡住|做不下去/;
+
+/** 最近一次實際打開檢查（要比最近一次做完的工作新，才算檢查的是現在的網頁） */
+function latestPlaytest(c: Commission): JobPlaytest | undefined {
+  const t = c.lastPlaytest;
+  const lj = [...c.jobs].reverse().find((j) => j.status === 'done');
+  return t && (!lj || t.at >= (lj.finishedAt || 0)) ? t : undefined;
+}
+/** 給委託那一輪的開場：實際打開檢查的結果 */
+function playtestLine(c: Commission): string {
+  const page = commissions.pickPage(c);
+  if (!page) return '';
+  const t = latestPlaytest(c);
+  if (!t) return `網頁「${page}」還沒實際打開檢查過：它長什麼樣、能不能用，現在都只是工坊助手的說法。\n`;
+  if (!t.ok) return `網頁「${t.page}」這次沒能實際打開檢查（${t.reason || ''}），它長什麼樣、能不能用還沒證實。\n`;
+  return `你實際打開網頁「${t.page}」檢查（${new Date(t.at).toLocaleString('zh-TW', { hour12: false })}）：看到：${t.seen || '（沒寫）'}${t.errors.length ? `\n瀏覽器回報：${t.errors.slice(0, 5).join('／')}` : '\n沒有錯誤訊息'}${t.problems?.length ? `\n問題：${t.problems.join('；')}` : ''}${t.untested?.length ? `\n還沒測到：${t.untested.join('；')}` : ''}${t.matches === false ? '\n⚠️ 跟工坊助手 STEP_RESULT 的說法不一致，以你看到的為準' : ''}\n`;
+}
+
+/** 委託做出網頁：實際打開試玩，她看截圖寫下看到什麼（11/8：之前只看工坊助手的 STEP_RESULT 就報告「網頁會怎樣」） */
+async function commissionPlaytest(c: Commission, j: ProjectJob | null): Promise<JobPlaytest | null> {
+  const page = commissions.pickPage(c);
+  if (!page) return null;
+  const pid = c.projectId;
+  const pt = await playtestPage(c.id, page);
+  if (!pt || !pt.shots.length) {
+    const rec: JobPlaytest = { at: Date.now(), page, ok: false, errors: [], reason: '試玩通道沒開（桌寵主程式沒開，或正在試玩別的東西）' };
+    if (j) j.playtest = rec;
+    c.lastPlaytest = rec;
+    commissions.save();
+    if (pid) research.append(pid, 'note', `委託的網頁「${page}」這次沒辦法實際打開檢查（試玩通道沒開），它長什麼樣、能不能用還沒證實。`);
+    console.log(`[委託] 「${c.title}」網頁「${page}」沒能實際打開檢查（試玩通道沒開）`);
+    return rec;
+  }
+  const errors = pt.logs
+    .filter((l) => !/Electron Security Warning/i.test(String(l.text || '')))
+    .map((l) => `${l.level === 'error' ? '錯誤' : '警告'}：${String(l.text || '').slice(0, 200)}`)
+    .slice(0, 8);
+  const shotKey = (j?.id || `p-${Date.now()}`).replace(/[^\w-]/g, '');
+  const shots = commissions.savePlaytestShots(c, shotKey, pt.shots);
+  const rec: JobPlaytest = { at: Date.now(), page, ok: true, errors, shotKey, shots };
+  const ai = getAiClient();
+  if (ai) {
+    const persona = describePersonality(lineStore.desktopContext().personality || DEFAULT_PERSONALITY);
+    const play = playtestParts({ playtest: { errors } } as any, pt);
+    const claims = (j?.result || [...c.jobs].reverse().find((x) => x.status === 'done')?.result || '（沒有）').slice(0, 1500);
+    try {
+      const { response } = await usageTask(commissionTask(c), () =>
+        generateSmartContent(
+          ai,
+          [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: `你是桌寵貓娘「西雅」。${persona.traits}
+你在做主人的委託「${c.title}」（${c.direction.slice(0, 200)}）。工坊助手做出了網頁「${page}」，助手的報告（STEP_RESULT.md）這樣說：
+${claims}
+
+現在你自己實際打開這個網頁檢查。
+${play.text}
+試玩時聲音是關掉的，聲音好不好聽看不出來。
+請照實寫（以截圖和錯誤訊息為準，助手的報告只是它的說法）：
+- seen：實際看到什麼（40～200 字）
+- matches：助手報告裡對網頁的描述，跟你實際看到的一致嗎（true／false；沒測到的部分不算不一致，寫進 untested）
+- problems：看到的問題（陣列，每條 60 字內；沒有就空陣列）
+- untested：這次試玩沒碰到、還不能確定的功能（陣列，每條 40 字內）
+只輸出 JSON：{ "seen": "", "matches": true, "problems": [], "untested": [] }
+
+網頁原始碼（參考用）：
+${commissions.readWs(c, page, 6000)}`,
+                },
+                ...play.images,
+              ],
+            },
+          ],
+          { responseMimeType: 'application/json', temperature: 0.3 },
+          AUTONOMY_MODEL
+        )
+      );
+      const out = parseLooseJson(response.text || '{}');
+      const arr = (v: any, n: number) => (Array.isArray(v) ? v.map((x) => String(x || '').trim().slice(0, n)).filter(Boolean).slice(0, 6) : []);
+      rec.seen = String(out?.seen || '').trim().slice(0, 300);
+      rec.problems = arr(out?.problems, 80);
+      rec.untested = arr(out?.untested, 60);
+      if (typeof out?.matches === 'boolean') rec.matches = out.matches;
+    } catch (err: any) {
+      console.warn(`[委託] 「${c.title}」看試玩截圖失敗：`, err?.status || err?.message);
+    }
+  }
+  if (j) j.playtest = rec;
+  c.lastPlaytest = rec;
+  commissions.save();
+  if (pid)
+    research.append(
+      pid,
+      'result',
+      `實際打開委託的網頁「${page}」檢查：我看到：${rec.seen || '（沒寫成）'}；${errors.length ? `瀏覽器回報：${errors.slice(0, 4).join('／')}` : '沒有錯誤訊息'}${rec.problems?.length ? `；問題：${rec.problems.join('；')}` : ''}${rec.untested?.length ? `；還沒測到：${rec.untested.join('；')}` : ''}${rec.matches === false ? '；跟工坊助手的報告不一致' : ''}`.slice(0, 800)
+    );
+  console.log(`[委託] 「${c.title}」實際打開網頁「${page}」：${shots} 張截圖、${errors.length} 則錯誤／警告${rec.problems?.length ? `、${rec.problems.length} 個問題` : ''}${rec.matches === false ? '、跟助手的報告不一致' : ''}`);
+  return rec;
 }
 
 /** 工坊不在這台電腦上（還沒裝 WSL／seia-workshop）：委託先暫停，跟主人說一次（不然每一輪都會先花額度想、到開工才失敗） */
@@ -3798,7 +3920,27 @@ app.post('/api/commissions/:id/checkpoint', async (req: Request, res: Response) 
   const c = commissions.get(String(req.params.id));
   if (!c) return res.status(404).json({ ok: false });
   const decision = req.body?.decision === 'approve' ? 'approve' : 'changes';
-  res.json(await commissionAnswered(c, decision, String(req.body?.note || ''), 'panel'));
+  res.json(await commissionAnswered(c, decision, String(req.body?.note || ''), 'panel', { force: req.body?.force === true }));
+});
+let commissionPlaytesting = false;
+app.post('/api/commissions/:id/playtest', async (req: Request, res: Response) => {
+  const c = commissions.get(String(req.params.id));
+  if (!c) return res.status(404).json({ ok: false });
+  if (!commissions.pickPage(c)) return res.json({ ok: false, reason: '工作區裡沒有網頁' });
+  if (commissionPlaytesting) return res.json({ ok: false, reason: '她正在看，等一下' });
+  commissionPlaytesting = true;
+  try {
+    const rec = await commissionPlaytest(c, null);
+    res.json(rec?.ok ? { ok: true, playtest: rec } : { ok: false, reason: rec?.reason || '沒打開成' });
+  } finally {
+    commissionPlaytesting = false;
+  }
+});
+app.get('/api/commissions/:id/playtest/:file', (req: Request, res: Response) => {
+  const p = commissions.playtestFile(String(req.params.id), String(req.params.file));
+  if (!p) return res.status(404).end();
+  res.setHeader('Cache-Control', 'no-store');
+  res.sendFile(p);
 });
 app.post('/api/commissions/:id/feedback', (req: Request, res: Response) => {
   const c = commissions.get(String(req.params.id));

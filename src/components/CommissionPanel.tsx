@@ -19,6 +19,20 @@ interface Checkpoint {
   ask?: string;
   status: 'waiting' | 'approved' | 'changes';
   reply?: string;
+  stuck?: boolean;
+}
+interface Playtest {
+  at: number;
+  page: string;
+  ok: boolean;
+  reason?: string;
+  errors: string[];
+  seen?: string;
+  problems?: string[];
+  untested?: string[];
+  matches?: boolean;
+  shotKey?: string;
+  shots?: number;
 }
 interface ToolDef {
   title: string;
@@ -63,6 +77,7 @@ interface Commission {
   jobs: Job[];
   waiting: Checkpoint | null;
   due?: { ok: boolean; reason?: string };
+  lastPlaytest?: Playtest;
 }
 interface Detail extends Commission {
   handoff: string;
@@ -213,6 +228,9 @@ export const CommissionPanel: React.FC = () => {
                   <p className="text-[11px] text-amber-200">⏳ {c.waiting.kind === 'plan' ? '計畫等你同意' : `第 ${(c.waiting.stage ?? 0) + 1} 階段的成果`}（{time(c.waiting.at)}）</p>
                   <p className="text-[10px] text-slate-200 whitespace-pre-wrap max-h-40 overflow-auto">{c.waiting.report}</p>
                   {c.waiting.ask && <p className="text-[10px] text-amber-100">她想問：{c.waiting.ask}</p>}
+                  {c.waiting.stuck && (
+                    <p className="text-[10px] text-rose-200">⚠️ 她說這個階段沒做成／卡住了。按「讓她繼續做」不會跳到下一階段；真的要略過這個階段才按「跳過這階段」。</p>
+                  )}
                   <textarea
                     value={note}
                     onChange={(e) => setNote(e.target.value)}
@@ -224,11 +242,26 @@ export const CommissionPanel: React.FC = () => {
                     <button
                       type="button"
                       disabled={busy}
-                      onClick={() => call(`/api/commissions/${c.id}/checkpoint`, 'POST', { decision: 'approve', note }, '同意了，她會繼續做').then(() => setNote(''))}
+                      onClick={() =>
+                        call(`/api/commissions/${c.id}/checkpoint`, 'POST', { decision: 'approve', note }, c.waiting?.stuck ? '她會繼續做這個階段' : '同意了，她會繼續做').then(() => setNote(''))
+                      }
                       className="px-2 py-0.5 rounded bg-emerald-700/80 hover:bg-emerald-600"
                     >
-                      同意
+                      {c.waiting.stuck ? '讓她繼續做' : '同意'}
                     </button>
+                    {c.waiting.stuck && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() =>
+                          window.confirm('她說這個階段沒做成。確定要跳過、算這個階段完成，直接進下一階段？') &&
+                          call(`/api/commissions/${c.id}/checkpoint`, 'POST', { decision: 'approve', note, force: true }, '跳過這個階段了').then(() => setNote(''))
+                        }
+                        className="px-2 py-0.5 rounded bg-rose-900/70 hover:bg-rose-800"
+                      >
+                        跳過這階段
+                      </button>
+                    )}
                     <button
                       type="button"
                       disabled={busy || !note.trim()}
@@ -291,9 +324,41 @@ export const CommissionPanel: React.FC = () => {
                     </label>
                   </div>
                   {c.tool.page && (
-                    <button type="button" onClick={() => setShowPage(!showPage)} className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]">
-                      {showPage ? '收起網頁' : '看網頁'}
-                    </button>
+                    <div className="flex gap-1.5">
+                      <button type="button" onClick={() => setShowPage(!showPage)} className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]">
+                        {showPage ? '收起網頁' : '看網頁'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => call(`/api/commissions/${c.id}/playtest`, 'POST', {}, '她實際打開看過了（大約要半分鐘）')}
+                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] disabled:opacity-40"
+                      >
+                        🔍 讓她打開看看
+                      </button>
+                    </div>
+                  )}
+                  {c.lastPlaytest && (
+                    <details>
+                      <summary className="text-[10px] text-slate-400 cursor-pointer">
+                        她實際打開看到的（{time(c.lastPlaytest.at)}）{c.lastPlaytest.ok ? (c.lastPlaytest.matches === false ? '⚠️ 跟助手說的不一樣' : c.lastPlaytest.errors.length || c.lastPlaytest.problems?.length ? '⚠️ 有問題' : '✔') : '✘ 沒打開成'}
+                      </summary>
+                      {c.lastPlaytest.ok ? (
+                        <div className="space-y-1">
+                          <p className="text-[10px] text-slate-300 whitespace-pre-wrap">{c.lastPlaytest.seen || '（沒寫成）'}</p>
+                          {!!c.lastPlaytest.errors.length && <p className="text-[10px] text-rose-300 whitespace-pre-wrap">{c.lastPlaytest.errors.join('\n')}</p>}
+                          {!!c.lastPlaytest.problems?.length && <p className="text-[10px] text-amber-200">問題：{c.lastPlaytest.problems.join('；')}</p>}
+                          {!!c.lastPlaytest.untested?.length && <p className="text-[10px] text-slate-400">還沒測到：{c.lastPlaytest.untested.join('；')}</p>}
+                          <div className="flex gap-1">
+                            {Array.from({ length: c.lastPlaytest.shots || 0 }, (_, i) => (
+                              <img key={i} src={`/api/commissions/${c.id}/playtest/${c.lastPlaytest!.shotKey}-${i + 1}.png`} alt={`截圖 ${i + 1}`} className="w-1/3 rounded border border-slate-700" />
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-[10px] text-slate-400">{c.lastPlaytest.reason}</p>
+                      )}
+                    </details>
                   )}
                   {showPage && c.tool.page && (
                     <iframe

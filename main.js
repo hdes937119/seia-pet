@@ -196,7 +196,8 @@ let playtestBusy = false;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function playtestWork(workId, file) {
-    const prefix = `${APP_URL}/api/workshop/${workId}/files/`;
+    // c- 開頭＝委託的專案工作區（11/8：委託做出的網頁也要實際打開檢查）
+    const prefix = /^c-/.test(workId) ? `${APP_URL}/api/commissions/${workId}/ws/` : `${APP_URL}/api/workshop/${workId}/files/`;
     const url = prefix + file.split('/').map(encodeURIComponent).join('/');
     const W = 400;
     const H = 400;
@@ -610,7 +611,7 @@ function startPlaytestServer() {
             } catch {
                 return reply(400, { ok: false });
             }
-            if (!/^w-[\d-]+$/.test(id) || entry.includes('..') || /^[\\/]/.test(entry)) return reply(400, { ok: false });
+            if (!/^[wc]-[\d-]+$/.test(id) || entry.includes('..') || /^[\\/]/.test(entry)) return reply(400, { ok: false });
             if (playtestBusy) return reply(409, { ok: false, reason: 'busy' });
             playtestBusy = true;
             try {
