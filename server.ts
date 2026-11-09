@@ -2438,8 +2438,10 @@ const seiaBrowser = createBrowser({
 /* ===== 行動提案（server/hostActions.ts，11/6）：她列步驟 → 主人在電腦前整個同意 → 照順序在主人電腦上執行；改了就要再同意 ===== */
 const hostActions = createHostActions(DATA_DIR, {
   isPublicUrl: (u) => isPublicUrl(u),
-  addFolderNames: () => folders.active().filter((g) => g.mode === 'add').map((g) => g.label),
+  addFolderNames: () => ['工作桌', ...folders.active().filter((g) => g.mode === 'add').map((g) => g.label)],
   addFolder: (name) => {
+    // 11/10：「工作桌」＝西雅的工作桌\成品（不用先借資料夾）
+    if (/^(西雅的)?工作桌$/.test(String(name || '').trim())) return { label: '西雅的工作桌\\成品', path: path.join(desk.root, '成品') };
     const g = folders.resolve([name]).find((x) => x.mode === 'add');
     return g ? { label: g.label, path: g.path } : null;
   },

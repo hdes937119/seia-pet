@@ -296,24 +296,57 @@ export const CommissionPanel: React.FC = () => {
                 </details>
               )}
 
-              {!c.tool && c.page && (
-                <div className="flex gap-1.5">
-                  {/* 11/9：還沒做出工具的委託也看得到網頁（之前沒有入口，她只好想辦法搬檔案） */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const api = (window as any).electronAPI;
-                      if (typeof api?.openWorkshopWork === 'function') api.openWorkshopWork(c.id, c.page, c.title);
-                      else window.open(`/api/commissions/${c.id}/ws/${String(c.page).split('/').map(encodeURIComponent).join('/')}`, '_blank');
-                    }}
-                    className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]"
-                  >
-                    看網頁
-                  </button>
-                  {typeof (window as any).electronAPI?.openDesk === 'function' && (
-                    <button type="button" onClick={() => (window as any).electronAPI.openDesk('委託')} className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]">
-                      📂 在工作桌打開
+              {(c.page || c.tool?.page) && (
+                <div className="space-y-1">
+                  {/* 11/10：看網頁、工作桌、讓她檢查合成一排（有沒有工具都一樣） */}
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const pg = String(c.tool?.page || c.page);
+                        const api = (window as any).electronAPI;
+                        if (typeof api?.openWorkshopWork === 'function') api.openWorkshopWork(c.id, pg, c.tool?.title || c.title);
+                        else window.open(`/api/commissions/${c.id}/ws/${pg.split('/').map(encodeURIComponent).join('/')}`, '_blank');
+                      }}
+                      className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]"
+                    >
+                      看網頁
                     </button>
+                    {typeof (window as any).electronAPI?.openDesk === 'function' && (
+                      <button type="button" onClick={() => (window as any).electronAPI.openDesk('委託')} className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]">
+                        📂 工作桌
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => call(`/api/commissions/${c.id}/playtest`, 'POST', {}, '她實際打開看過了（大約要半分鐘）')}
+                      className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] disabled:opacity-40"
+                    >
+                      🔍 讓她檢查
+                    </button>
+                  </div>
+                  {c.lastPlaytest && (
+                    <details>
+                      <summary className="text-[10px] text-slate-400 cursor-pointer">
+                        她實際打開看到的（{time(c.lastPlaytest.at)}）{c.lastPlaytest.ok ? (c.lastPlaytest.matches === false ? '⚠️ 跟助手說的不一樣' : c.lastPlaytest.errors.length || c.lastPlaytest.problems?.length ? '⚠️ 有問題' : '✔') : '✘ 沒打開成'}
+                      </summary>
+                      {c.lastPlaytest.ok ? (
+                        <div className="space-y-1">
+                          <p className="text-[10px] text-slate-300 whitespace-pre-wrap">{c.lastPlaytest.seen || '（沒寫成）'}</p>
+                          {!!c.lastPlaytest.errors.length && <p className="text-[10px] text-rose-300 whitespace-pre-wrap">{c.lastPlaytest.errors.join('\n')}</p>}
+                          {!!c.lastPlaytest.problems?.length && <p className="text-[10px] text-amber-200">問題：{c.lastPlaytest.problems.join('；')}</p>}
+                          {!!c.lastPlaytest.untested?.length && <p className="text-[10px] text-slate-400">還沒測到：{c.lastPlaytest.untested.join('；')}</p>}
+                          <div className="flex gap-1">
+                            {Array.from({ length: c.lastPlaytest.shots || 0 }, (_, i) => (
+                              <img key={i} src={`/api/commissions/${c.id}/playtest/${c.lastPlaytest!.shotKey}-${i + 1}.png`} alt={`截圖 ${i + 1}`} className="w-1/3 rounded border border-slate-700" />
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-[10px] text-slate-400">{c.lastPlaytest.reason}</p>
+                      )}
+                    </details>
                   )}
                 </div>
               )}
@@ -350,60 +383,6 @@ export const CommissionPanel: React.FC = () => {
                       小時自動跑（電腦開著才會跑）
                     </label>
                   </div>
-                  {c.tool.page && (
-                    <div className="flex gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          // 在桌寵（Electron）裡開成獨立、可調整大小的視窗；在瀏覽器裡才用面板裡的小窗
-                          const api = (window as any).electronAPI;
-                          if (typeof api?.openWorkshopWork === 'function') api.openWorkshopWork(c.id, c.tool!.page, c.tool!.title);
-                          else setShowPage(!showPage);
-                        }}
-                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]"
-                      >
-                        {showPage ? '收起網頁' : '看網頁'}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => call(`/api/commissions/${c.id}/playtest`, 'POST', {}, '她實際打開看過了（大約要半分鐘）')}
-                        className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px] disabled:opacity-40"
-                      >
-                        🔍 讓她打開看看
-                      </button>
-                    </div>
-                  )}
-                  {c.lastPlaytest && (
-                    <details>
-                      <summary className="text-[10px] text-slate-400 cursor-pointer">
-                        她實際打開看到的（{time(c.lastPlaytest.at)}）{c.lastPlaytest.ok ? (c.lastPlaytest.matches === false ? '⚠️ 跟助手說的不一樣' : c.lastPlaytest.errors.length || c.lastPlaytest.problems?.length ? '⚠️ 有問題' : '✔') : '✘ 沒打開成'}
-                      </summary>
-                      {c.lastPlaytest.ok ? (
-                        <div className="space-y-1">
-                          <p className="text-[10px] text-slate-300 whitespace-pre-wrap">{c.lastPlaytest.seen || '（沒寫成）'}</p>
-                          {!!c.lastPlaytest.errors.length && <p className="text-[10px] text-rose-300 whitespace-pre-wrap">{c.lastPlaytest.errors.join('\n')}</p>}
-                          {!!c.lastPlaytest.problems?.length && <p className="text-[10px] text-amber-200">問題：{c.lastPlaytest.problems.join('；')}</p>}
-                          {!!c.lastPlaytest.untested?.length && <p className="text-[10px] text-slate-400">還沒測到：{c.lastPlaytest.untested.join('；')}</p>}
-                          <div className="flex gap-1">
-                            {Array.from({ length: c.lastPlaytest.shots || 0 }, (_, i) => (
-                              <img key={i} src={`/api/commissions/${c.id}/playtest/${c.lastPlaytest!.shotKey}-${i + 1}.png`} alt={`截圖 ${i + 1}`} className="w-1/3 rounded border border-slate-700" />
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="text-[10px] text-slate-400">{c.lastPlaytest.reason}</p>
-                      )}
-                    </details>
-                  )}
-                  {showPage && c.tool.page && (
-                    <iframe
-                      title={c.tool.title}
-                      src={`/api/commissions/${c.id}/ws/${c.tool.page.split('/').map(encodeURIComponent).join('/')}`}
-                      sandbox="allow-scripts"
-                      className="w-full h-96 rounded border border-slate-700 bg-white"
-                    />
-                  )}
                   {d?.report && <pre className="text-[10px] text-slate-200 whitespace-pre-wrap max-h-60 overflow-auto bg-slate-950 rounded p-1">{d.report}</pre>}
                   {!!c.runs.length && (
                     <details>

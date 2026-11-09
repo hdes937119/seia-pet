@@ -59,7 +59,7 @@ export const CHAT_TOOL_DECLS = [
   {
     name: 'plan_actions',
     description:
-      '主人要你在他電腦上做事（例如「幫我裝 OBS」「把那個檔案下載下來」）時，照順序列出步驟送成行動提案；主人要在電腦前的設定面板按同意才會執行，同意後就不能改。步驟只能用：{"type":"winget","id":"套件 ID"}、{"type":"download","url":"公開網址","filename":"檔名"}、{"type":"open","target":"下載\\\\西雅 裡的檔名或公開網址"}、{"type":"write_file","folder":"主人借的可新增檔案的資料夾","path":"相對路徑","content":"內容"}。不確定套件 ID 就照實說，不要亂猜。',
+      '主人要你在他電腦上做事（例如「幫我裝 OBS」「把那個檔案下載下來」）時，照順序列出步驟送成行動提案；主人要在電腦前的設定面板按同意才會執行，同意後就不能改。步驟只能用：{"type":"winget","id":"套件 ID"}、{"type":"download","url":"公開網址","filename":"檔名"}、{"type":"open","target":"下載\\\\西雅 裡的檔名或公開網址"}、{"type":"write_file","folder":"工作桌（或主人借的可新增檔案的資料夾）","path":"相對路徑","content":"內容"}。不確定套件 ID 就照實說，不要亂猜。',
     parametersJsonSchema: {
       type: 'object',
       properties: {

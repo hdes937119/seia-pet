@@ -352,17 +352,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 />
               </div>
               <span className="text-[11px]">西雅輸入中…（可直接輸入打斷）</span>
-              {onInterrupt && (
-                <button
-                  type="button"
-                  onClick={onInterrupt}
-                  className="ml-1 flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-950/90 hover:bg-rose-900 text-rose-300 border border-rose-700/60 text-[10px] font-medium transition-colors"
-                  title="立即打斷思考"
-                >
-                  <Square className="w-2.5 h-2.5 fill-current" />
-                  打斷
-                </button>
-              )}
             </div>
           </div>
         )}

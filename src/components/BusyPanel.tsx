@@ -76,7 +76,9 @@ export const BusyPanel: React.FC = () => {
           </button>
         </div>
       ) : (
-        <div className="flex flex-wrap gap-1">
+        <details>
+          <summary className="text-[10px] text-slate-500 cursor-pointer">手動叫她去做某件事（測試用）</summary>
+        <div className="flex flex-wrap gap-1 pt-1">
           {data.activities.map((a) => (
             <button
               key={a.id}
@@ -89,6 +91,7 @@ export const BusyPanel: React.FC = () => {
             </button>
           ))}
         </div>
+        </details>
       )}
       {msg && <p className="text-[10px] text-amber-300">{msg}</p>}
     </div>

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Cpu, Image as ImageIcon, Sliders, Upload, X, Wand2, Sparkles, Compass, Loader2 } from 'lucide-react';
+import { Cpu, Image as ImageIcon, Sliders, Upload, X, Wand2, Sparkles, Compass, Loader2, Hammer } from 'lucide-react';
 import type { DiscoverySource, ExploreSettings, GeminiModelOption } from '../types';
 import type { VisualMode } from '../hooks/useAvatarAppearance';
 import type { PetStateId } from './pet/petStates';
@@ -14,7 +14,7 @@ import { voiceService } from '../services/voiceService';
  * 注意：關閉時只是隱藏，不會卸載 —— 螢幕偵測模組要持續運作，關掉面板不能中斷螢幕分享。
  */
 
-export type SettingsTab = 'look' | 'model' | 'screen' | 'persona' | 'explore';
+export type SettingsTab = 'look' | 'model' | 'screen' | 'persona' | 'explore' | 'workshop';
 export type PinMode = 'off' | 'normal' | 'game';
 type Tab = SettingsTab;
 
@@ -99,7 +99,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
     ['look', '外觀', <ImageIcon key="i" className="w-3.5 h-3.5" />],
     ['model', '模型', <Cpu key="c" className="w-3.5 h-3.5" />],
     ['persona', '個性', <Sliders key="s" className="w-3.5 h-3.5" />],
-    ['explore', '主動', <Compass key="e" className="w-3.5 h-3.5" />],
+    ['explore', '生活', <Compass key="e" className="w-3.5 h-3.5" />],
+    ['workshop', '工坊', <Hammer key="w" className="w-3.5 h-3.5" />],
   ];
   const ex = props.exploreSettings;
   const setEx = (patch: Partial<ExploreSettings>) => props.onExploreSettingsChange({ ...ex, ...patch });
@@ -289,7 +290,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
 
         {/* 主動互動：關係 + 打招呼 + 自主網路探索 */}
         <div className={tab === 'explore' ? 'space-y-3' : 'hidden'}>
-          <WorkshopPanel />
           {props.relationship}
           <p className="text-[11px] text-slate-400">陪伴感</p>
           <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs">
@@ -449,21 +449,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={props.onExploreNow}
-            disabled={exploring}
-            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-sky-600 to-purple-600 text-white disabled:opacity-60"
-          >
-            {exploring ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Compass className="w-3.5 h-3.5" />}
-            {exploring ? '貓貓正在網路上逛…' : '現在就讓貓貓去逛逛'}
-          </button>
+          {exploring && (
+            <p className="text-[11px] text-sky-300 flex items-center gap-1">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> 貓貓正在網路上逛…（想叫她現在去逛，在「手帳」裡按）
+            </p>
+          )}
           {props.exploreStatus.state === 'error' && (
             <p className="text-[11px] text-amber-300">⚠️ 上次探索失敗：{props.exploreStatus.message}</p>
           )}
           <p className="text-[10px] text-slate-500 leading-relaxed">
             論壇會先在看板內搜尋主題，找不到就看推文 / 互動最多的熱門文。同一頁 10 分鐘內只抓一次，被網站擋就休息 15 分鐘。找到的東西會跳在貓貓頭上，也會收進「摸魚手帳」。
           </p>
+        </div>
+
+        {/* 工坊（11/10 從「主動」拆出來）：工作桌、作品、配件、委託、行動提案 */}
+        <div className={tab === 'workshop' ? 'space-y-3' : 'hidden'}>
+          <WorkshopPanel />
         </div>
       </div>
     </section>

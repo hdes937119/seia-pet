@@ -7,9 +7,11 @@ import { DiaryList } from './DiaryList';
 interface MemoryNotebookModalProps {
   memories: MemoryKeyword[];
   onClose: () => void;
+  /** 切到摸魚手帳（圓形選單「手帳」合併成一個） */
+  onSwitch?: () => void;
 }
 
-export const MemoryNotebookModal: React.FC<MemoryNotebookModalProps> = ({ memories, onClose }) => {
+export const MemoryNotebookModal: React.FC<MemoryNotebookModalProps> = ({ memories, onClose, onSwitch }) => {
   const [activeTab, setActiveTab] = useState<'permanent' | 'decaying' | 'diary'>('permanent');
   const [newKeyword, setNewKeyword] = useState('');
   const [newNotes, setNewNotes] = useState('');
@@ -47,12 +49,22 @@ export const MemoryNotebookModal: React.FC<MemoryNotebookModalProps> = ({ memori
               <p className="text-xs text-slate-400">艾賓浩斯關鍵字動態衰變與永久記憶核心</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-200 text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors"
-          >
-            關閉
-          </button>
+          <div className="flex items-center gap-1.5">
+            {onSwitch && (
+              <button
+                onClick={onSwitch}
+                className="text-slate-300 hover:text-white text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors"
+              >
+                🎬 摸魚手帳
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="text-slate-400 hover:text-slate-200 text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors"
+            >
+              關閉
+            </button>
+          </div>
         </div>
 
         {/* Tab switch & Actions */}
@@ -93,14 +105,6 @@ export const MemoryNotebookModal: React.FC<MemoryNotebookModalProps> = ({ memori
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={handleSimulateDecay}
-              className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-purple-300 px-2 py-1 rounded bg-slate-800/70 hover:bg-slate-800 transition-colors"
-              title="測試艾賓浩斯時間衰減"
-            >
-              <Sparkles className="w-3 h-3 text-purple-400" />
-              <span>測試時間衰變</span>
-            </button>
             <button
               onClick={() => setShowAddForm(!showAddForm)}
               className="flex items-center gap-1 text-xs text-purple-300 hover:text-purple-200 px-2.5 py-1 rounded-lg bg-purple-950/60 hover:bg-purple-900/60 border border-purple-800/40 transition-colors font-medium"

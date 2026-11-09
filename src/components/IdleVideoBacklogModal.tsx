@@ -8,6 +8,8 @@ interface IdleVideoBacklogModalProps {
   onExploreNow: () => Promise<void>;
   onAskAboutVideo: (video: DiscoveredVideo) => void;
   onDeleteVideo: (id: string) => void;
+  /** 切到記憶筆記 */
+  onSwitch?: () => void;
 }
 
 export const IdleVideoBacklogModal: React.FC<IdleVideoBacklogModalProps> = ({
@@ -16,6 +18,7 @@ export const IdleVideoBacklogModal: React.FC<IdleVideoBacklogModalProps> = ({
   onExploreNow,
   onAskAboutVideo,
   onDeleteVideo,
+  onSwitch,
 }) => {
   const [isExploring, setIsExploring] = useState(false);
 
@@ -57,12 +60,22 @@ export const IdleVideoBacklogModal: React.FC<IdleVideoBacklogModalProps> = ({
               <p className="text-xs text-slate-400">待機時根據性格與主人喜好自主探索的私房清單</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-200 text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors"
-          >
-            關閉
-          </button>
+          <div className="flex items-center gap-1.5">
+            {onSwitch && (
+              <button
+                onClick={onSwitch}
+                className="text-slate-300 hover:text-white text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors"
+              >
+                📒 記憶筆記
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="text-slate-400 hover:text-slate-200 text-xs px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors"
+            >
+              關閉
+            </button>
+          </div>
         </div>
 
         {/* Action Bar */}

@@ -194,7 +194,9 @@ export const ActionsPanel: React.FC = () => {
       {!shown.length && <p className="text-[10px] text-slate-500">還沒有提案。她研究或做委託時，如果需要在你電腦上裝軟體、下載檔案，會先在這裡列步驟給你看。</p>}
       {dl && <p className="text-[10px] text-slate-500 break-all">她下載的東西放在：{dl}</p>}
 
-      <div className="pt-1 border-t border-slate-800 space-y-1">
+      <details className="pt-1 border-t border-slate-800">
+        <summary className="text-[10px] text-slate-400 cursor-pointer">進階：她的瀏覽器（幫她登入、清除瀏覽資料）</summary>
+      <div className="space-y-1 pt-1">
         <div className="flex items-center justify-between">
           <span>🌐 她的瀏覽器</span>
           <span className="text-[10px] text-slate-500">{running ? `正在：${running.slice(0, 20)}…` : '在背景，沒在用'}</span>
@@ -234,6 +236,7 @@ export const ActionsPanel: React.FC = () => {
         </button>
         <p className="text-[10px] text-slate-500">她不能自己登入、留言、發文、購買；密碼和卡號欄位她打不進去，付款、結帳、銀行頁面她也不能點。瀏覽器紀錄重開後端會清掉，做研究時的結果會留在她的筆記裡。</p>
       </div>
+      </details>
     </div>
   );
 };

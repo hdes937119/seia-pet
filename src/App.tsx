@@ -197,6 +197,10 @@ export default function App() {
 
   // Modals & Panels
   const [activeModal, setActiveModal] = useState<'none' | 'notebook' | 'videos'>('none');
+  const lastBookRef = useRef<'notebook' | 'videos'>('videos');
+  useEffect(() => {
+    if (activeModal !== 'none') lastBookRef.current = activeModal;
+  }, [activeModal]);
 
   // 浮動版面：預設只顯示立繪；左鍵開對話框、右鍵開扇形選單
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -1055,18 +1059,12 @@ export default function App() {
       onSelect: () => voiceInput.toggle(),
     },
     {
-      id: 'videos',
-      label: '摸魚手帳',
-      icon: <Film className="w-5 h-5" />,
-      badge: videos.length,
-      onSelect: () => setActiveModal('videos'),
-    },
-    {
-      id: 'notebook',
-      label: '記憶筆記',
+      // 11/10：摸魚手帳和記憶筆記合成一個「手帳」，裡面可以切換（打開上次看的那本）
+      id: 'books',
+      label: '手帳',
       icon: <BookOpen className="w-5 h-5" />,
-      badge: permanentCount,
-      onSelect: () => setActiveModal('notebook'),
+      badge: videos.length,
+      onSelect: () => setActiveModal(lastBookRef.current),
     },
     {
       id: 'screen',
@@ -1087,9 +1085,9 @@ export default function App() {
             const list = (j.widgets || []).filter((w: any) => w.status === 'installed');
             const api = (window as any).electronAPI;
             if (list.length === 1 && typeof api?.openWidget === 'function') api.openWidget(list[0].id, list[0].title);
-            else openSettings('explore');
+            else openSettings('workshop');
           })
-          .catch(() => openSettings('explore'));
+          .catch(() => openSettings('workshop'));
       },
     },
     {
@@ -1321,7 +1319,7 @@ export default function App() {
 
       {/* Memory Notebook Modal */}
       {activeModal === 'notebook' && (
-        <MemoryNotebookModal memories={memories} onClose={() => setActiveModal('none')} />
+        <MemoryNotebookModal memories={memories} onClose={() => setActiveModal('none')} onSwitch={() => setActiveModal('videos')} />
       )}
 
       {/* Idle Video Backlog Modal */}
@@ -1335,6 +1333,7 @@ export default function App() {
             setIsChatOpen(true);
           }}
           onDeleteVideo={handleDeleteVideo}
+          onSwitch={() => setActiveModal('notebook')}
         />
       )}
     </div>

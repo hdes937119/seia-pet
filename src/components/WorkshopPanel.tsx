@@ -223,7 +223,10 @@ export const WorkshopPanel: React.FC = () => {
         {!data.works.length && <p className="text-[10px] text-slate-500">還沒有作品。按「去做吧」讓她自己決定做什麼。</p>}
       </div>
       <p className="text-[10px] text-slate-500">作品在隔離的工坊裡做、在沙盒裡跑；只有你在下面給的資料夾，工作時才會唯讀掛進去。「讓她展示」之後，她聊天時才會提起它。</p>
-      <FolderGrants />
+      <details className="pt-1 border-t border-slate-800">
+        <summary className="text-[10px] text-slate-400 cursor-pointer">進階：借她資料夾（現在想給她看的檔案，放進工作桌的「給西雅」就好）</summary>
+        <FolderGrants />
+      </details>
     </div>
     <WidgetsPanel />
     <CommissionPanel />
