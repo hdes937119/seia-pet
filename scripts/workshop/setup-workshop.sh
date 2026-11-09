@@ -7,7 +7,7 @@ say() { printf '\n\033[36m== %s ==\033[0m\n' "$1"; }
 
 say "1/5 安裝系統套件（bubblewrap 是 dsh 的沙盒；會要你輸入 Ubuntu 的密碼）"
 sudo apt-get update -y
-sudo apt-get install -y bubblewrap curl git ca-certificates
+sudo apt-get install -y bubblewrap curl git ca-certificates python3-venv python3-pip
 
 say "2/5 安裝 Node.js 24（dsh 需要 24.9 以上）"
 export NVM_DIR="$HOME/.nvm"

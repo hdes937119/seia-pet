@@ -12,7 +12,7 @@ import fs from 'fs';
 import path from 'path';
 
 export const DESK_NAME = '西雅的工作桌';
-const SUB = { works: '成品', commissions: '委託', inbox: '給西雅' } as const;
+const SUB = { works: '成品', commissions: '委託', research: '研究', inbox: '給西雅' } as const;
 const SKIP_COMMISSION = new Set(['PLAN.md', 'HANDOFF.md', 'STEP_RESULT.md', 'TOOL.json']);
 const MAX_FILE = 20 * 1024 * 1024;
 const MAX_FILES = 200;
@@ -21,6 +21,7 @@ const README = `這是西雅的工作桌（桌寵自動建立的）
 
 成品\\    西雅在工坊做好的小作品，做完會自動放一份到這裡（每件一個資料夾，雙擊 index.html 就能打開）
 委託\\    你交代的委託做出來的網頁和報告，她每做完一步就會更新
+研究\\    你叫她研究的專案或網頁（例如 GitHub 連結），報告是 RESULT.md
 給西雅\\  你想給她看的檔案（文字、程式、資料）放這裡，她聊天、研究、做委託時都看得到（她只能讀，不會改）
 
 西雅的程式還是在隔離的工坊裡跑，碰不到這個資料夾以外的東西。
@@ -44,7 +45,13 @@ export function createDesk(projectRoot: string, dataDir: string, log: (m: string
     try {
       for (const k of Object.keys(SUB) as Array<keyof typeof SUB>) fs.mkdirSync(dir(k), { recursive: true });
       const readme = path.join(root, '說明.txt');
-      if (!fs.existsSync(readme)) fs.writeFileSync(readme, '﻿' + README.replace(/\n/g, '\r\n'));
+      let old = '';
+      try {
+        old = fs.readFileSync(readme, 'utf8');
+      } catch {
+        old = '';
+      }
+      if (!old.includes('研究\\')) fs.writeFileSync(readme, '﻿' + README.replace(/\n/g, '\r\n'));
     } catch (err: any) {
       log(`[工作桌] 建立失敗：${err?.message}`);
     }
@@ -131,6 +138,22 @@ export function createDesk(projectRoot: string, dataDir: string, log: (m: string
     }
   }
 
+  /** 研究做完（實驗室 study）→ 研究\<題目>\（RESULT.md 和小的輸出檔，不含下載下來的專案 _repo） */
+  function putStudy(w: { id: string; title: string }, workDir: string, sub: 'research' | 'works' = 'research'): string {
+    if (!fs.existsSync(workDir)) return '';
+    try {
+      ensure();
+      const dest = slot(dir(sub), w.title, `${sub === 'works' ? 'task' : 'study'}:${w.title}`);
+      const n = copyTree(workDir, dest, (rel) => /^(_repo|_skills|_skilltest|_prev|deliver|\.venv|node_modules|\.cache)(\/|$)/.test(rel));
+      const shown = `${DESK_NAME}\\${SUB[sub]}\\${path.basename(dest)}`;
+      log(`[工作桌] 研究「${w.title}」放到 ${shown}（${n} 個檔案）`);
+      return shown;
+    } catch (err: any) {
+      log(`[工作桌] 放研究失敗：${err?.message}`);
+      return '';
+    }
+  }
+
   /** 「給西雅」裡的檔案清單 */
   function inbox(max = 40): Array<{ rel: string; bytes: number; at: number }> {
     const out: Array<{ rel: string; bytes: number; at: number }> = [];
@@ -199,12 +222,13 @@ export function createDesk(projectRoot: string, dataDir: string, log: (m: string
       `你和主人共用的工作桌：桌寵資料夾裡的「${DESK_NAME}」（主人在 Windows 直接打開就看得到；設定面板工坊那裡也有「打開工作桌」）。`,
       `- ${SUB.works}\\：你在工坊做好的作品會自動放進來（${list('works').slice(-8).join('、') || '還沒有'}）`,
       `- ${SUB.commissions}\\：委託做出來的網頁和報告，每做完一步自動更新（${list('commissions').slice(-8).join('、') || '還沒有'}）`,
+      `- ${SUB.research}\\：主人叫你研究的專案／網頁的報告（${list('research').slice(-8).join('、') || '還沒有'}）`,
       `- ${SUB.inbox}\\：主人放給你看的檔案（${files.length ? files.map((f) => `${f.rel}（${Math.ceil(f.bytes / 1024)}KB）`).join('、') : '現在是空的'}）；用 my_desk 讀`,
       '做好的東西不用搬也不用送行動提案，程式會自動放上工作桌；請主人去工作桌（或設定面板）打開就好。',
     ].join('\n');
   }
 
-  return { root, ensure, putWork, putCommission, inbox, readInbox, inboxFiles, describe, inboxDir: () => dir('inbox') };
+  return { root, ensure, putWork, putCommission, putStudy, inbox, readInbox, inboxFiles, describe, inboxDir: () => dir('inbox') };
 }
 
 export type Desk = ReturnType<typeof createDesk>;

@@ -60,6 +60,8 @@ interface ProactiveState {
   lastMasterAt: number;
   /** 上一次自動螢幕吐槽的時間 */
   lastScreenAt?: number;
+  /** 11/10：螢幕吐槽自己的「主人還沒回」（不跟報時、通知共用；只用來放慢，不會整個停） */
+  screenUnanswered?: number;
   log: Array<{ at: number; kind: ProactiveKind; ok: boolean; reason?: string }>;
 }
 
@@ -151,6 +153,7 @@ export function createProactive(dataDir: string, deps: ProactiveDeps) {
   /** 主人開口了（聊天或 LINE）→ 主動話的「未回」歸零 */
   function masterSpoke(now = Date.now()) {
     st.unanswered = 0;
+    st.screenUnanswered = 0;
     st.lastMasterAt = now;
     save();
   }
@@ -164,20 +167,24 @@ export function createProactive(dataDir: string, deps: ProactiveDeps) {
    * 這裡只擋「她在忙」和「主人 1 分鐘內剛講過話」（剛聊完就不要插嘴吐槽畫面）。
    */
   // live＝實況模式（主人開的、只在遊戲畫面）：不等主人回應，頻率交給前端的冷卻時間
-  function screenCheck(now = Date.now(), live = false): { ok: boolean; reason?: string } {
+  function screenCheck(now = Date.now(), live = false, cooldownSec = 0): { ok: boolean; reason?: string } {
     if (deps.isBusy?.()) return { ok: false, reason: '她正在忙' };
     if (now - st.lastMasterAt < SCREEN_AFTER_MASTER_MS) return { ok: false, reason: '主人剛剛才跟她說過話' };
     if (live) return { ok: true };
-    if (st.unanswered >= UNANSWERED_STOP) return { ok: false, reason: `主人還沒回前面 ${st.unanswered} 句` };
-    if (now - (st.lastScreenAt || 0) < SCREEN_MIN_GAP_MS) return { ok: false, reason: '剛剛才吐槽過畫面' };
+    // 11/10：間隔跟著主人在面板設的冷卻（以前固定 4 分鐘，面板寫 2 分鐘其實是 4 分鐘）；
+    // 主人一直沒回就逐漸放慢（2 句後 ×2、4 句後 ×4），不會像以前 2 句就整個停
+    const base = cooldownSec > 0 ? Math.max(30_000, cooldownSec * 1000 * 0.8) : SCREEN_MIN_GAP_MS;
+    const n = st.screenUnanswered || 0;
+    const mul = n >= 4 ? 4 : n >= 2 ? 2 : 1;
+    if (now - (st.lastScreenAt || 0) < base * mul) return { ok: false, reason: n >= 2 ? `前面 ${n} 句吐槽主人都還沒回，放慢一點` : '剛剛才吐槽過畫面' };
     return { ok: true };
   }
 
   /** 自動螢幕吐槽真的說出口了：也算一句「主人還沒回」 */
   function screenSaid(now = Date.now(), live = false) {
     st.lastScreenAt = now;
-    // 實況模式的吐槽是旁白，不算「主人還沒回」，關掉實況後才不會因為累積的次數一直不說話
-    if (!live) st.unanswered++;
+    // 實況模式的吐槽是旁白，不算「主人還沒回」；一般吐槽只算進自己的計數（不再卡住報時、通知，也不被它們卡住）
+    if (!live) st.screenUnanswered = (st.screenUnanswered || 0) + 1;
     save();
   }
 

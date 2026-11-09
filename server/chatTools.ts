@@ -11,16 +11,19 @@ export const MAX_ROUNDS = 3;
 
 export const CHAT_TOOL_DECLS = [
   {
-    name: 'start_workshop_work',
+    name: 'workshop_task',
     description:
-      '主人明確要你在工坊做一個「單一網頁」的小作品（小遊戲、小工具、小動畫）時用。只是聊到、問你會不會、或你自己想做，都不要用。要花好幾天、要累積資料、要分階段的大東西用 create_commission。',
+      '交給工坊做事（工坊是跟主人電腦隔開的小 Linux，裡面的助手會真的寫程式、執行、上網下載、需要時把套件裝在那份工作的資料夾裡）。kind：web＝單一網頁的小作品（小遊戲、小工具、小動畫、配件）；program＝寫程式做事（處理資料、做小腳本或命令列工具、試用某個套件或專案、產生檔案），成果放工作桌「成品」；study＝深入研究一個專案或網頁（下載下來讀程式、授權、試跑），報告放工作桌「研究」。主人說「剛剛那個再改一下」「接著做」時填 continue_from，會在上一份的檔案上接著改，不會從頭做。只有主人明確要你動手時才用；只是聊到、問你會不會、或只是問某個連結在講什麼（用 read_link）都不要用。要花好幾天、分階段、要累積資料的大東西用 create_commission。開工後先跟主人說你去做了，做好之前不要講結果。',
     parametersJsonSchema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: '作品名（12 字內）' },
-        brief: { type: 'string', description: '寫給工坊助手的具體說明：做成什麼樣子、怎麼玩、你想加的小細節（60～150 字）' },
+        kind: { type: 'string', enum: ['web', 'program', 'study'] },
+        title: { type: 'string', description: '名稱（12 字內；接著改時可省略，沿用上一份的名字）' },
+        brief: { type: 'string', description: '寫給工坊助手的具體說明：主人要什麼（照主人的意思寫清楚）、成品的樣子、你想加的小細節；接著改時寫這次要改什麼（60～300 字）' },
+        url: { type: 'string', description: 'study 一定要填（GitHub 或網頁網址）；program 有相關網址也可以填' },
+        continue_from: { type: 'string', description: '要接著改的那一份：作品名，或「上一份」（最近一份主人叫你做的）。新的東西就不要填' },
       },
-      required: ['title', 'brief'],
+      required: ['kind', 'brief'],
     },
   },
   {
@@ -86,6 +89,12 @@ export const CHAT_TOOL_DECLS = [
       },
       required: ['title', 'why', 'steps'],
     },
+  },
+  {
+    name: 'read_link',
+    description:
+      '讀一個公開網址的內容：主人貼了連結、或問你某個網頁／GitHub 專案在講什麼時用（先讀再回答，不要憑印象講）。GitHub 專案會讀到簡介、授權、檔案清單和 README；GitHub 上的單一檔案會讀到原始內容。讀之前先跟主人說一聲你去看看。',
+    parametersJsonSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
   },
   {
     name: 'my_desk',

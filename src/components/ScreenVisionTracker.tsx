@@ -16,6 +16,9 @@ import { setLiveFrameGetter } from '../liveFrame';
 
 const GAME_COOLDOWN_KEY = 'gemini_twin_cat_game_cooldown';
 const LIVE_MODE_KEY = 'gemini_twin_cat_live_commentary';
+const SCREEN_COOLDOWN_KEY = 'gemini_twin_cat_screen_cooldown';
+/** 實況模式生效的畫面：遊戲、影片（11/10） */
+const isLiveActivity = (a: ScreenActivity | null) => isGamingActivity(a) || a?.category === 'video';
 const isGamingActivity = (a: ScreenActivity | null) =>
   a?.category === 'gaming' || a?.appContext === 'gaming';
 
@@ -79,8 +82,22 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
   const [lastLatencyMs, setLastLatencyMs] = useState<number | null>(null);
   const [lastUsedModel, setLastUsedModel] = useState<string | null>(null);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
-  // Default minimum cooldown after first trigger: 300 seconds (5 minutes)
-  const [cooldownSec, setCooldownSec] = useState<number>(300);
+  // 一般畫面多久最多聊一次（11/10：記住設定，以前每次重開都回到 5 分鐘）
+  const [cooldownSec, setCooldownSec] = useState<number>(() => {
+    try {
+      return Number(localStorage.getItem(SCREEN_COOLDOWN_KEY)) || 300;
+    } catch {
+      return 300;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(SCREEN_COOLDOWN_KEY, String(cooldownSec));
+    } catch {
+      // ignore
+    }
+  }, [cooldownSec]);
+  const cooldownRef = useRef({ normal: cooldownSec, game: 120 });
   // 打遊戲時當遊戲夥伴：聊得比較勤（預設 2 分鐘），可以另外設定
   const [gameCooldownSec, setGameCooldownSec] = useState<number>(() => {
     try {
@@ -125,6 +142,9 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
     }
   }, [pace]);
   const [waitingHighlight, setWaitingHighlight] = useState(false);
+  useEffect(() => {
+    cooldownRef.current = { normal: cooldownSec, game: gameCooldownSec };
+  }, [cooldownSec, gameCooldownSec]);
   useEffect(() => {
     try {
       localStorage.setItem(GAME_COOLDOWN_KEY, String(gameCooldownSec));
@@ -435,7 +455,9 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
             mosaicFrames: visual?.frames,
             mosaicNote: visual?.note,
             manual,
-            liveCommentary: !manual && liveModeRef.current && isGamingActivity(lastActivityRef.current),
+            liveCommentary: !manual && liveModeRef.current && isLiveActivity(lastActivityRef.current),
+            // 後端的最短間隔跟著這裡的冷卻時間（11/10）
+            cooldownSec: isGamingActivity(lastActivityRef.current) ? cooldownRef.current.game : cooldownRef.current.normal,
             preferredModel: preferredModelRef.current,
             clientTime: getClientTime(),
           }),
@@ -861,7 +883,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
               className={`flex items-center gap-1 border rounded px-1.5 py-0.5 text-[10px] cursor-pointer ${
                 liveMode ? 'bg-rose-950/70 border-rose-500/60 text-rose-100' : 'bg-slate-900 border-slate-700 text-slate-300'
               }`}
-              title="只在遊戲畫面生效：你沒回她也會照遊戲冷卻時間繼續吐槽（像實況旁白）；你剛講完話 1 分鐘內還是不插嘴。越勤越耗 Gemini 額度"
+              title="遊戲和看影片時生效：你沒回她也會照冷卻時間繼續吐槽（像實況旁白）；你剛講完話 1 分鐘內還是不插嘴。越勤越耗 Gemini 額度"
             >
               <input
                 type="checkbox"
