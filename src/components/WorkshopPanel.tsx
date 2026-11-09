@@ -117,7 +117,19 @@ export const WorkshopPanel: React.FC = () => {
     <>
     <div className="px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs space-y-2">
       <div className="flex items-center justify-between">
-        <span>🛠️ 西雅的工坊</span>
+        <span className="flex items-center gap-1.5">
+          🛠️ 西雅的工坊
+          {typeof (window as any).electronAPI?.openDesk === 'function' && (
+            <button
+              type="button"
+              onClick={() => (window as any).electronAPI.openDesk('')}
+              title="桌寵資料夾裡的「西雅的工作桌」：她做好的作品、委託成果都在這裡；想給她看的檔案放進「給西雅」"
+              className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]"
+            >
+              📂 工作桌
+            </button>
+          )}
+        </span>
         <span className="text-[10px] text-slate-400">
           今天 {data.today} / {data.dailyMax} 件
         </span>

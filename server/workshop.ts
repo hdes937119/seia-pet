@@ -121,6 +121,8 @@ export interface WorkshopDeps {
   apiKey?: () => string;
   /** 主人給的資料夾（server/folders.ts）：開工時掛進去、做完卸下、交付檔案 */
   folders?: Folders;
+  /** 每次開工都要唯讀放進去的資料夾（11/9：工作桌的「給西雅」） */
+  extraGrants?: () => any[];
 }
 
 const MAX_FILES = 30;
@@ -595,7 +597,7 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
     save();
     log(`[工坊] ${isLab ? '實驗室' : ''}開工：${work.title}（${work.ideaBy === 'seia' ? '她自己想的' : '主人的點子'}）${skills.length ? `，帶了 ${skills.length} 個技能（${skills.map((k) => k.name).join('、')}）` : ''}`);
 
-    const grants = idea.folders?.length && deps.folders ? deps.folders.resolve(idea.folders) : [];
+    const grants = [...(idea.folders?.length && deps.folders ? deps.folders.resolve(idea.folders) : []), ...((deps.folders && deps.extraGrants?.()) || [])];
     void (async () => {
       const t0 = Date.now();
       let mounted: Mounted[] = [];

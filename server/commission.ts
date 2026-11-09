@@ -152,9 +152,13 @@ export const RESUME_RE = /繼續做|繼續吧|恢復|接著做|重新開始/;
 const GENERIC_GRAMS = new Set(['系統', '工具', '計畫', '專案', '一個', '自動', '程式', '網頁', '資料', '分析', '做一', '幫我']);
 
 /** 工作區不要搬的東西 */
-const WS_SKIP = (rel: string) => /(^|\/)(node_modules|__pycache__|\.cache|\.git|\.venv|venv)(\/|$)/.test(rel);
+const WS_SKIP = (rel: string) => /(^|\/)(node_modules|__pycache__|\.cache|\.git|\.venv|venv)(\/|$)/.test(rel) || /^_desk(\/|$)/.test(rel);
 
 export interface CommissionDeps {
+  /** 11/9：工作桌「給西雅」裡的檔案，開工時放進工作區的 _desk/（唯讀，不存回來） */
+  inboxFiles?: () => Array<{ rel: string; data: Buffer }>;
+  /** 工作區存回來之後（工作做完、工具跑完）：把網頁和報告放上工作桌 */
+  onStore?: (c: Commission, dir: string) => void;
   distro: string;
   proxyFile: string;
   model: () => string;
@@ -193,6 +197,8 @@ ${detail ? `西雅的說明：${detail}\n` : ''}
 - 只讀寫目前資料夾。不要去讀家目錄設定、/proc、環境變數或任何金鑰。
 - 誠實：只寫程式真的跑出來的結果；抓不到、跑不出來就照實寫，不要編數字、不要用假資料代替。
 - 收集到的歷史資料放在 data/ 底下（例如 data/history/日期.json），之後每次執行要能累積，不要覆蓋掉舊資料。整個工作區不要超過 20MB。
+- 主人放給你參考的檔案在 _desk/（唯讀，做完不會存回去；沒有就是主人沒放）。
+- 做出來的網頁和報告，每次做完程式會自動放到主人電腦的「西雅的工作桌\\委託\\」，不用另外搬、也不用寫到別的地方。
 - 網頁可以用 window.seia（只有被主人裝成配件、而且給了權限時才有；平常打開時沒有，所以一定要先檢查 if (window.seia)，沒有時作品也要能正常顯示）：await seia.say('文字')、await seia.notify('標題', '內容')、await seia.remind({ inMinutes: 25, text: '休息一下' }) 或 { at: '2026-11-09T08:00:00+08:00', text: '起床', repeat: 'daily' }（時間到由桌寵提醒，配件關掉也會響）、await seia.reminders()、await seia.cancelReminder(id)。每個都回傳 { ok, reason? }。沙盒裡不能用 localStorage，要記住的提醒交給 seia.remind。
 - 如果做出了「主人可以直接執行的工具」，在工作區根目錄寫 TOOL.json：
   {"title":"工具名稱","desc":"一句話說明","run":"在工作區根目錄執行的指令（例如 python3 tool.py）","report":"跑完會更新的報告檔（例如 out/REPORT.md）","page":"跑完會更新的網頁（例如 out/index.html，可省略）","schedule_hours":24,"timeout_sec":120}
@@ -546,6 +552,7 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
   /* ===== 工作區（Windows 這邊的備份是正本，會跟著雲端同步） ===== */
   function packWorkspace(c: Commission): string {
     const entries = readDirEntries(wsDir(c.id), WS_SKIP);
+    for (const f of deps.inboxFiles?.() || []) entries.push({ path: `_desk/${f.rel}`, data: f.data });
     const total = entries.reduce((a, e) => a + e.data.length, 0);
     if (total > wsMaxBytes()) throw new Error(`工作區太大（${Math.round(total / 1024 / 1024)}MB）`);
     return packTarGz(entries).toString('base64');
@@ -555,6 +562,11 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
     try {
       const entries = unpackTarGz(tar, { maxFiles: 3000, maxBytes: wsMaxBytes() }).filter((e) => !WS_SKIP(e.path));
       replaceDir(wsDir(c.id), entries);
+      try {
+        deps.onStore?.(c, wsDir(c.id));
+      } catch (err: any) {
+        log(`[委託] 放上工作桌失敗：${err?.message}`);
+      }
       return '';
     } catch (err: any) {
       return `工作區沒有存回來（${err?.message}），保留上一版`;
@@ -785,6 +797,7 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}`;
 階段：${focus.stages.map((s, i) => `${i + 1}.${s.title}${i === focus.stage ? '←目前' : ''}`).join(' ')}
 ${k ? `⏳ 正在等主人回覆的檢查點（${k.kind === 'plan' ? '計畫' : `第 ${(k.stage ?? 0) + 1} 階段`}）：${k.report.slice(0, 350)}${k.ask ? `\n你問主人的：${k.ask}` : ''}\n` : ''}${lastJob ? `最近一次工坊工作（${lastJob.status === 'done' ? '完成' : '失敗'}）：${(lastJob.result || lastJob.error || '').slice(0, 200)}\n` : ''}${focus.tool ? `給主人的工具「${focus.tool.title}」：${focus.tool.desc}${focus.runs.length ? `；最近一次執行${focus.runs[focus.runs.length - 1].ok ? '成功' : '失敗'}` : ''}（主人可以在設定面板按「立即執行」）\n` : ''}${notes.length ? `你最近的研究筆記：\n${notes.map((n) => `  ${n.slice(0, 150)}`).join('\n')}\n` : ''}`);
     }
+    parts.push('委託做出來的網頁和報告，程式會自動放到「西雅的工作桌\\委託\\」（主人在 Windows 直接打開），設定面板「主人的委託」也能按「看網頁」；不用搬檔案，也不要為了搬檔案送行動提案。');
     parts.push('聊到委託時照實說進度，不要說還沒做的已經做好了（細節不確定就用 commission_status 查）。主人對委託給意見、同意或要修改時，照規則 12 處理。');
     return parts.join('\n');
   }
@@ -801,6 +814,7 @@ ${k ? `⏳ 正在等主人回覆的檢查點（${k.kind === 'plan' ? '計畫' : 
         cyclesToday: cyclesToday(c),
         due: cycleDue(c),
         waiting: waiting(c) || null,
+        page: pickPage(c) || null,
       })),
     };
   }

@@ -926,6 +926,8 @@ export default function App() {
 
   // 主動打招呼：開啟桌寵 / 離開回來 / 深夜提醒 / 整點報時（像朋友注意到你來了）
   const lastGreetAtRef = useRef(0);
+  // 11/9：12:00 開桌寵時，整點報時和開場打招呼同時講、都問同一件事 → 剛開 3 分鐘內不報時
+  const appStartAtRef = useRef(Date.now());
   const requestGreeting = async (reason: GreetingReason, awayMinutes: number, awaySince: number) => {
     // 主人正在等回覆或在講話時，不要插話
     if (isWaitingRef.current || voiceInput.state !== 'idle') return;
@@ -988,6 +990,7 @@ export default function App() {
     onChime: () => {
       if (isWaitingRef.current || voiceInput.state !== 'idle') return false;
       if (Date.now() - lastGreetAtRef.current < 2 * 60 * 1000) return true;
+      if (Date.now() - appStartAtRef.current < 3 * 60 * 1000) return true;
       void requestGreeting('hourly', 0, Date.now());
       return true;
     },

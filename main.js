@@ -222,6 +222,19 @@ ipcMain.handle('widget-bridge', async (event, action, args) => {
     }
 });
 
+// 西雅的工作桌（11/9）：用檔案總管打開桌寵資料夾裡的「西雅的工作桌」（sub＝裡面的子資料夾，例如「委託」）
+ipcMain.handle('open-desk', async (_event, sub) => {
+    const root = path.join(__dirname, '西雅的工作桌');
+    let target = root;
+    const s = String(sub || '').replace(/\//g, '\\');
+    if (s && !s.includes('..') && !/^[\\]/.test(s) && !/^[a-zA-Z]:/.test(s)) {
+        const p = path.join(root, s);
+        if (fs.existsSync(p)) target = p;
+    }
+    fs.mkdirSync(root, { recursive: true });
+    return (await shell.openPath(target)) === '';
+});
+
 ipcMain.handle('open-workshop-work', (_event, id, entry, title) => {
     const workId = String(id || '');
     const file = String(entry || 'index.html');

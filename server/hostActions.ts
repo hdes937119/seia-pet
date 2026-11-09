@@ -71,6 +71,8 @@ export interface HostDeps {
   isPublicUrl: (url: string) => Promise<boolean>;
   /** 主人借的、可以新增檔案的資料夾（名字 → 路徑） */
   addFolder: (name: string) => { label: string; path: string } | null;
+  /** 可以新增檔案的資料夾名稱（錯誤訊息用） */
+  addFolderNames?: () => string[];
   log?: (m: string) => void;
 }
 
@@ -249,7 +251,12 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
         }
       } else if (s.type === 'write_file') {
         const f = deps.addFolder(String(s.folder));
-        if (!f) problems.push(`${n}：沒有叫「${s.folder}」、可以新增檔案的資料夾（要主人先在資料夾權限裡給）`);
+        if (!f) {
+          const names = deps.addFolderNames?.() || [];
+          problems.push(
+            `${n}：write_file 的 folder 要填主人借你、可以新增檔案的資料夾名稱${String(s.folder || '').trim() ? `（沒有叫「${s.folder}」的）` : '（這次沒填）'}；${names.length ? `現在可以用：${names.map((x) => `「${x}」`).join('、')}` : '現在一個都沒有'}。做好的作品和委託網頁會自動放上主人的「西雅的工作桌」，不用這樣搬。`
+          );
+        }
         else {
           const dest = path.join(f.path, ...String(s.path).split('/'));
           if (fs.existsSync(dest)) problems.push(`${n}：「${s.path}」已經存在，不會覆蓋`);
@@ -288,7 +295,21 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
     plans = plans.slice(-40);
     save();
     log(`[行動] 她提出行動提案「${p.title}」（第 ${p.version} 版，${steps.length} 步）`);
-    return check(p);
+    const checked = await check(p);
+    // 11/9：同一件事送了好幾份 → 新的檢查過了，舊的（同名、或寫同一個檔、下載同一個網址）作廢
+    if (checked.status === 'waiting') {
+      const keys = (x: ActionPlan) => new Set(x.steps.map((s: any) => (s.type === 'write_file' ? `w:${s.folder}/${s.path}` : s.type === 'download' ? `d:${s.url}` : s.type === 'winget' ? `g:${s.id}` : `o:${s.target}`)));
+      const mine = keys(checked);
+      for (const o of plans) {
+        if (o === checked || o.status !== 'waiting') continue;
+        if (o.title === checked.title || [...keys(o)].some((k) => mine.has(k))) {
+          o.status = 'superseded';
+          log(`[行動] 「${o.title}」（${o.id}）跟新的提案重複，作廢`);
+        }
+      }
+      save();
+    }
+    return checked;
   }
 
   async function execStep(s: ActionStep): Promise<{ ok: boolean; output: string }> {

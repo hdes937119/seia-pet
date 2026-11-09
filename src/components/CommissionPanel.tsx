@@ -76,6 +76,8 @@ interface Commission {
   runs: ToolRun[];
   jobs: Job[];
   waiting: Checkpoint | null;
+  /** 工作區裡的網頁（沒有工具也有）：11/9 */
+  page?: string | null;
   due?: { ok: boolean; reason?: string };
   lastPlaytest?: Playtest;
 }
@@ -292,6 +294,28 @@ export const CommissionPanel: React.FC = () => {
                   <summary className="text-[10px] text-slate-400 cursor-pointer">完整計畫</summary>
                   <p className="text-[10px] text-slate-300 whitespace-pre-wrap max-h-60 overflow-auto">{c.plan}</p>
                 </details>
+              )}
+
+              {!c.tool && c.page && (
+                <div className="flex gap-1.5">
+                  {/* 11/9：還沒做出工具的委託也看得到網頁（之前沒有入口，她只好想辦法搬檔案） */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const api = (window as any).electronAPI;
+                      if (typeof api?.openWorkshopWork === 'function') api.openWorkshopWork(c.id, c.page, c.title);
+                      else window.open(`/api/commissions/${c.id}/ws/${String(c.page).split('/').map(encodeURIComponent).join('/')}`, '_blank');
+                    }}
+                    className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]"
+                  >
+                    看網頁
+                  </button>
+                  {typeof (window as any).electronAPI?.openDesk === 'function' && (
+                    <button type="button" onClick={() => (window as any).electronAPI.openDesk('委託')} className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]">
+                      📂 在工作桌打開
+                    </button>
+                  )}
+                </div>
               )}
 
               {c.tool && (

@@ -88,6 +88,12 @@ export const CHAT_TOOL_DECLS = [
     },
   },
   {
+    name: 'my_desk',
+    description:
+      '看你和主人共用的「西雅的工作桌」（桌寵資料夾裡）：你做好的作品（成品）、委託的網頁和報告（委託）會自動放上去；主人想給你看的檔案放在「給西雅」。不給 file＝看工作桌上有什麼；file＝讀「給西雅」裡的一個文字檔（相對路徑）。主人說「我放了東西給你」「你看一下工作桌」時用。',
+    parametersJsonSchema: { type: 'object', properties: { file: { type: 'string' } } },
+  },
+  {
     name: 'propose_widget',
     description:
       '申請把你做好的工坊作品或委託網頁「裝成配件」，放進主人的桌寵（圓形選單「配件」），像鬧鐘、計時器、提醒小工具。主人在設定面板同意才會裝。配件可以要的權限：say（讓你在桌面上說一句話）、notify（Windows 通知）、remind（定時提醒，時間到你會提醒主人）。只要真的用得到的權限。作品要先做好、而且程式裡用 window.seia 才能用這些權限（沒用的話它就只是一個小視窗）。',

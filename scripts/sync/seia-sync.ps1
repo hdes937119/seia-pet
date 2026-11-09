@@ -24,6 +24,7 @@ $AppName = (Get-Content -Raw -Encoding UTF8 (Join-Path $Root 'package.json') | C
 $LocalStorage = Join-Path $env:APPDATA "$AppName\Local Storage"
 $BackupRoot = Join-Path $env:LOCALAPPDATA '西雅同步備份'
 $LogDir = Join-Path $Root 'logs'
+$Desk = Join-Path $Root '西雅的工作桌'
 $LogFile = Join-Path $LogDir 'sync.log'
 
 function Log($msg) {
@@ -115,10 +116,11 @@ function Newest-Local {
 }
 
 # 備份：這台的記憶（拿雲端的之前）或雲端的記憶（選擇留這台的時候）；只留最近 10 份
-function Backup-Set($label, $dataDir, $lsDir) {
+function Backup-Set($label, $dataDir, $lsDir, $deskDir = '') {
   $dest = Join-Path $BackupRoot ("$(Get-Date -Format 'yyyyMMdd-HHmmss')-$label")
   Copy-Tree $dataDir (Join-Path $dest 'data') @('_claude_tmp')
   Copy-Tree $lsDir (Join-Path $dest 'localstorage')
+  if ($deskDir) { Copy-Tree $deskDir (Join-Path $dest 'desk') }
   Log "備份到 $dest"
   try {
     Get-ChildItem -Path $BackupRoot -Directory | Sort-Object Name -Descending | Select-Object -Skip 10 |
@@ -171,6 +173,15 @@ function Git-Push {
 }
 
 # ---------- 交接 ----------
+# 11/9：記下「拿過哪一台的哪一份記憶」，上傳時一起寫進 handoff.json；另一台拿記憶時就知道兩邊有沒有分岔
+function Seen-Map($obj) {
+  $m = @{}
+  if ($obj -and $obj.seen) { foreach ($p in $obj.seen.PSObject.Properties) { $m[$p.Name] = [int64]$p.Value } }
+  return $m
+}
+function Save-State([int64]$lastSyncAt, $seen, [int64]$lastPushAt) {
+  Write-Json $StateFile @{ lastSyncAt = $lastSyncAt; machine = $Me; seen = $seen; lastPushAt = $lastPushAt }
+}
 function Write-Lock($cloud) {
   Write-Json (Join-Path $cloud 'lock.json') @{ machine = $Me; since = (NowMs) }
 }
@@ -202,7 +213,14 @@ function Do-Pull {
     $cloudAt = [int64]$h.at
     $localNewest = Newest-Local
     $useCloud = $true
-    if ($st -and $localNewest -gt ($last + 120000)) {
+    # 11/9：這台上傳過的記憶，另一台沒拿過就接著用、又上傳了 → 兩邊分岔，問主人（不默默蓋掉這台）
+    $myPush = if ($st -and $st.lastPushAt) { [int64]$st.lastPushAt } elseif ($st) { $last } else { [int64]0 }
+    $theySaw = (Seen-Map $h)[$Me]
+    if (-not $theySaw) { $theySaw = [int64]0 }
+    if ($myPush -gt 0 -and $theySaw -lt $myPush) {
+      $useCloud = Ask ("兩台的記憶分岔了：雲端上是「$($h.machine)」在 $(Fmt $cloudAt) 留下的，但它沒有拿到這台 $(Fmt $myPush) 上傳的記憶就接著用了。兩邊沒辦法合併。`n`n" +
+        "是＝用雲端的（這台的會先備份）`n否＝用這台的（雲端的會先備份，下次關桌寵時上傳這台的）")
+    } elseif ($st -and $localNewest -gt ($last + 120000)) {
       $useCloud = Ask ("雲端上有「$($h.machine)」在 $(Fmt $cloudAt) 留下的記憶，這台電腦在上次同步（$(Fmt $last)）之後也有新的記憶（$(Fmt $localNewest)）。兩邊沒辦法合併。`n`n" +
         "是＝用雲端的（這台的會先備份）`n否＝用這台的（雲端的會先備份，下次關桌寵時上傳這台的）")
     } elseif (-not $st -and $localNewest -gt $cloudAt) {
@@ -211,15 +229,19 @@ function Do-Pull {
     }
     try {
       if ($useCloud) {
-        Backup-Set 'before-pull' (Join-Path $Root 'data') $LocalStorage
+        Backup-Set 'before-pull' (Join-Path $Root 'data') $LocalStorage $Desk
         [void](Mirror (Join-Path $cloud 'data') (Join-Path $Root 'data') @('_claude_tmp'))
         if (Test-Path (Join-Path $cloud 'localstorage')) { [void](Mirror (Join-Path $cloud 'localstorage') $LocalStorage) }
+        if (Test-Path (Join-Path $cloud 'desk')) { [void](Mirror (Join-Path $cloud 'desk') $Desk) }
         Log "已從雲端拿回「$($h.machine)」$(Fmt $cloudAt) 的記憶（$($h.kind)）"
       } else {
-        Backup-Set 'cloud-kept-local' (Join-Path $cloud 'data') (Join-Path $cloud 'localstorage')
+        Backup-Set 'cloud-kept-local' (Join-Path $cloud 'data') (Join-Path $cloud 'localstorage') (Join-Path $cloud 'desk')
         Log '保留這台的記憶，雲端的已備份'
       }
-      Write-Json $StateFile @{ lastSyncAt = $cloudAt; machine = $Me }
+      $seen = Seen-Map $st
+      $seen[$h.machine] = $cloudAt
+      $lp = if ($st -and $st.lastPushAt) { [int64]$st.lastPushAt } else { [int64]0 }
+      Save-State $cloudAt $seen $lp
     } catch {
       Log "⚠️ $($_.Exception.Message)"
       Tell "同步記憶時出了問題：$($_.Exception.Message)`n`n這次先用這台現有的記憶開桌寵；備份在 $BackupRoot。"
@@ -241,12 +263,27 @@ function Do-Push([bool]$snapshot) {
     if (-not $snapshot) { Git-Push }
     return
   }
+  # 11/9：雲端上有另一台留下、這台還沒拿過的記憶 → 不上傳（之前老家電腦把一週前的記憶蓋掉了新電腦的）
+  $h = Read-Json (Join-Path $cloud 'handoff.json')
+  $st = Read-Json $StateFile
+  $last = if ($st -and $st.lastSyncAt) { [int64]$st.lastSyncAt } else { [int64]0 }
+  if ($h -and $h.machine -and $h.machine -ne $Me -and [int64]$h.at -gt $last) {
+    Log "⚠️ 雲端上有「$($h.machine)」$(Fmt ([int64]$h.at)) 留下、這台還沒拿過的記憶，這台先不上傳（避免蓋掉）"
+    if (-not $snapshot) {
+      Tell ("雲端上有「$($h.machine)」在 $(Fmt ([int64]$h.at)) 留下的記憶，這台電腦還沒拿過，所以這次不上傳這台的記憶（避免把比較新的蓋掉）。`n`n" +
+        "下次用 start-pet.bat 開桌寵時會先問你要用哪一邊。程式碼照常推送到 GitHub。")
+      Git-Push
+    }
+    return
+  }
   try {
     [void](Mirror (Join-Path $Root 'data') (Join-Path $cloud 'data') @('_claude_tmp'))
     if (-not $snapshot -and (Test-Path $LocalStorage)) { [void](Mirror $LocalStorage (Join-Path $cloud 'localstorage')) }
+    if (-not $snapshot -and (Test-Path $Desk)) { [void](Mirror $Desk (Join-Path $cloud 'desk')) }
     $now = NowMs
-    Write-Json (Join-Path $cloud 'handoff.json') @{ machine = $Me; at = $now; kind = $(if ($snapshot) { 'snapshot' } else { 'stop' }) }
-    Write-Json $StateFile @{ lastSyncAt = $now; machine = $Me }
+    $seen = Seen-Map $st
+    Write-Json (Join-Path $cloud 'handoff.json') @{ machine = $Me; at = $now; kind = $(if ($snapshot) { 'snapshot' } else { 'stop' }); seen = $seen }
+    Save-State $now $seen $now
     Log $(if ($snapshot) { '記憶快照已上傳' } else { '記憶已交接到雲端' })
   } catch {
     Log "⚠️ 上傳記憶失敗：$($_.Exception.Message)"

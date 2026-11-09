@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openWorkshopWork: (id, entry, title) => ipcRenderer.invoke('open-workshop-work', id, entry, title),
   // 西雅的配件（主人安裝過的作品）：開成小視窗
   openWidget: (id, title) => ipcRenderer.invoke('open-widget', id, title),
+  // 西雅的工作桌（桌寵資料夾裡）：用檔案總管打開
+  openDesk: (sub) => ipcRenderer.invoke('open-desk', sub),
   // 語音輸入全域熱鍵：回傳取消訂閱的函式
   getVoiceHotkey: () => ipcRenderer.invoke('get-voice-hotkey'),
   onVoiceHotkey: (callback) => {

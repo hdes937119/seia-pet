@@ -7,7 +7,9 @@
 
 const WINDOW_MS = 6 * 60 * 60 * 1000;
 const MAX_REPLIES = 15;
-const MAX_PHRASES = 6;
+const MAX_PHRASES = 3;
+/** 11/9：正在聊的東西（委託、作品、資料夾名稱）和介面上的名詞避不開，不算重複 */
+const COMMON = ['資料夾', '設定面板', '工作桌', '工坊', '委託', '行動提案', '網頁', '檔案', 'HTML', 'html', 'index', '階段', '鬧鐘', '配件', '研究'];
 
 /** 常用字詞：不算「梗」 */
 const STOP_WORDS = [
@@ -51,7 +53,8 @@ export interface PetLine {
  * - 4 字以上：在 2 則以上的回覆出現；3 字：要 3 則以上
  * - 主人這句話自己提到的不算（主人主動聊，她當然可以接）
  */
-export function repeatedPhrases(lines: PetLine[], userText = '', now = Date.now()): string[] {
+export function repeatedPhrases(lines: PetLine[], userText = '', now = Date.now(), ignore: string[] = []): string[] {
+  const skipWords = [...COMMON, ...ignore.map((x) => String(x || '').trim()).filter((x) => x.length >= 2)];
   const recent = lines
     .filter((l) => l && l.text && (!l.at || now - l.at <= WINDOW_MS))
     .slice(-MAX_REPLIES);
@@ -63,6 +66,7 @@ export function repeatedPhrases(lines: PetLine[], userText = '', now = Date.now(
     if (c < (g.length >= 4 ? 2 : 3)) return false;
     if (contentChars(g) < 3) return false;
     if (user.includes(g)) return false;
+    if (skipWords.some((w) => w.includes(g) || g.includes(w))) return false;
     return true;
   });
   // 只留最長的版本：被更長、出現次數一樣多的片段包住的就丟掉

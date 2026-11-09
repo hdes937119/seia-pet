@@ -70,6 +70,21 @@ export function createRecall(dataDir: string, log: (m: string) => void = console
   const lastSeenSeq = new Map<string, number>();
   const bySeqIdx = new Map<number, number>();
   const dupKey = (role: string, text: string) => `${role}|${text}`;
+  /** 11/9：後端記完整回覆、前端又把拆開的每一句送來 → 同一段話記兩次。她的一句話如果包含在 10 分鐘內她另一則更長的回覆裡，就是分段，不再記 */
+  const segNorm = (t: string) => String(t || '').replace(/\[\[[A-Z]+(:[^\]]*)?\]\]/g, '').replace(/\s+/g, '');
+  function isSegmentOf(role: string, text: string, at: number): boolean {
+    if (role !== 'pet') return false;
+    const n = segNorm(text);
+    if (n.length < 2) return false;
+    // 11/9：分段常常晚好幾句才送來 → 往回看 400 句（用時間判斷，不用句數）
+    for (let i = recs.length - 1, k = 0; i >= 0 && k < 400; i--, k++) {
+      const p = recs[i];
+      if (p.role !== 'pet' || Math.abs(p.at - at) > 10 * 60 * 1000) continue;
+      const pn = segNorm(p.text);
+      if (pn.length > n.length && pn.includes(n)) return true;
+    }
+    return false;
+  }
 
   function index(r: StreamRecord) {
     const tf = new Map<string, number>();
@@ -93,7 +108,13 @@ export function createRecall(dataDir: string, log: (m: string) => void = console
         if (!line.trim()) continue;
         try {
           const r = JSON.parse(line);
-          if (r && typeof r.text === 'string') index(r);
+          if (r && typeof r.text === 'string') {
+            if (isSegmentOf(r.role, r.text, Number(r.at) || 0)) {
+              seq = Math.max(seq, Number(r.seq) || 0);
+              continue;
+            }
+            index(r);
+          }
         } catch {
           // 壞掉的一行跳過
         }
@@ -112,6 +133,7 @@ export function createRecall(dataDir: string, log: (m: string) => void = console
     if (!clean) return;
     const seen = lastSeen.get(dupKey(role, clean.slice(0, 2000)));
     if (seen !== undefined && Math.abs(at - seen) < 10 * 60 * 1000) return;
+    if (isSegmentOf(role, clean, at)) return;
     const r: StreamRecord = { seq: seq + 1, at, role, text: clean.slice(0, 2000), ch };
     index(r);
     try {

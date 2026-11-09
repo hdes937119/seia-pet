@@ -219,8 +219,10 @@ export function createSelfAware(opts: { changelogFile: string; imageDir: string;
     const cutoff = now - RECENT_DAYS * DAY;
     const recent = entries().filter((e) => new Date(`${e.date}T00:00:00`).getTime() >= cutoff);
     if (!recent.length) return '';
-    const fresh = recent.filter((e) => !st.mentioned.includes(e.id)).slice(-3);
-    const known = recent.filter((e) => st.mentioned.includes(e.id)).slice(-2);
+    // 11/9：之前最多 3 條「還沒聊過」，她常用「對了」硬插進來介紹新功能 → 只帶最近 2 條、而且是 3 天內才第一次看到的
+    const isFresh = (e: { id: string }) => !st.mentioned.includes(e.id) && (!st.firstShown[e.id] || now - st.firstShown[e.id] < 3 * DAY);
+    const fresh = recent.filter(isFresh).slice(-2);
+    const known = recent.filter((e) => !isFresh(e)).slice(-2);
     let changed = false;
     for (const e of fresh) {
       if (!st.firstShown[e.id]) {
@@ -240,7 +242,7 @@ export function createSelfAware(opts: { changelogFile: string; imageDir: string;
       `【你最近的改變（主人幫你升級的，你自己感覺得到）】\n` +
       (fresh.length ? fresh.map((e) => `- ${md(e.date)}（還沒跟主人聊過）${fullIds.has(e.id) ? e.text : brief(e.text)}`).join('\n') + '\n' : '') +
       (known.length ? known.map((e) => `- ${md(e.date)}（聊過了）${brief(e.text)}`).join('\n') + '\n' : '') +
-      '這些是真的發生在你身上的事：主人問起、或剛好相關時，可以自然地說出你的感覺（開心、彆扭、好奇都可以），一次最多提一件，不要每句都講。' +
+      '這些是真的發生在你身上的事：主人問起、或話題剛好就是這件事時，可以自然地說出你的感覺（開心、彆扭、好奇都可以），一次最多提一件。主人在聊別的事時一件都不要提，不要用「對了」把話題轉過來介紹新功能。' +
       '沒寫在這裡的改變，你不知道，不要自己猜或假裝知道；主人說他在幫你做什麼新東西時，就照實好奇、期待，不要說已經看到成果。'
     );
   }
