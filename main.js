@@ -329,7 +329,54 @@ async function playtestWork(workId, file) {
         const shots = [];
         shots.push(await shot());
 
-        // 像第一次玩的人：點畫面上幾個地方、拖一下（拉桿）、按幾個常用鍵
+        // 11/10：先像認真的人一樣，照順序按「剛打開時看得到的按鈕」，每按一顆等 1.5 秒、記下畫面文字
+        // （以前直接亂點：按了「開始」馬上又按到剛冒出來的「暫停」，試玩就誤判成「計時不會動」）
+        const steps = [];
+        const pageText = async () => {
+            try {
+                return String(await Promise.race([wc.executeJavaScript('document.body ? document.body.innerText : ""', true), sleep(1500).then(() => '')]))
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .slice(0, 160);
+            } catch {
+                return '';
+            }
+        };
+        const listButtons = async () => {
+            try {
+                const r = await Promise.race([
+                    wc.executeJavaScript(
+                        `(() => [...document.querySelectorAll('button,[role=button],input[type=button],input[type=submit]')].map((e, i) => {
+                            const r = e.getBoundingClientRect(); const st = getComputedStyle(e);
+                            const vis = r.width > 2 && r.height > 2 && st.visibility !== 'hidden' && st.display !== 'none' && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+                            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), vis, dis: !!e.disabled, label: ((e.innerText || e.value || e.getAttribute('aria-label') || e.title || '').trim() || ('第' + (i + 1) + '個按鈕')).slice(0, 20) };
+                        }).filter((b) => b.vis && !b.dis))()`,
+                        true
+                    ),
+                    sleep(1500).then(() => []),
+                ]);
+                return Array.isArray(r) ? r : [];
+            } catch {
+                return [];
+            }
+        };
+        steps.push(`剛打開：${(await pageText()) || '（讀不到文字）'}`);
+        const first = (await listButtons()).map((b) => b.label);
+        const clicked = new Set();
+        for (let n = 0; n < 6; n++) {
+            const b = (await listButtons()).find((x) => first.includes(x.label) && !clicked.has(x.label));
+            if (!b) break;
+            clicked.add(b.label);
+            wc.sendInputEvent({ type: 'mouseMove', x: b.x, y: b.y });
+            wc.sendInputEvent({ type: 'mouseDown', x: b.x, y: b.y, button: 'left', clickCount: 1 });
+            wc.sendInputEvent({ type: 'mouseUp', x: b.x, y: b.y, button: 'left', clickCount: 1 });
+            await sleep(1500);
+            steps.push(`按「${b.label}」→ 1.5 秒後：${(await pageText()) || '（讀不到文字）'}`);
+        }
+        if (!first.length) steps.push('剛打開時沒有看得到、能按的按鈕');
+        shots.push(await shot());
+
+        // 再像第一次玩的人：點畫面上幾個地方、拖一下（拉桿）、按幾個常用鍵
         const pts = [
             [0.5, 0.5], [0.5, 0.75], [0.5, 0.85], [0.25, 0.5], [0.75, 0.5], [0.5, 0.3], [0.3, 0.7], [0.7, 0.7], [0.5, 0.6],
         ];
@@ -355,9 +402,8 @@ async function playtestWork(workId, file) {
             wc.sendInputEvent({ type: 'keyUp', keyCode: key });
             await sleep(150);
         }
-        await sleep(600);
-        shots.push(await shot());
         await sleep(2500);
+        steps.push(`接著亂點畫面 9 個地方、左右拖 3 次、按空白鍵／Enter／方向鍵，等 2.5 秒：${(await pageText()) || '（讀不到文字）'}`);
         shots.push(await shot());
 
         let text = '';
@@ -366,7 +412,7 @@ async function playtestWork(workId, file) {
         } catch {
             // 拿不到文字也沒關係
         }
-        return { ok: true, shots: shots.filter(Boolean), logs, text };
+        return { ok: true, shots: shots.filter(Boolean), logs, text, steps };
     } finally {
         if (!win.isDestroyed()) win.destroy();
     }

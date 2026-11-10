@@ -670,6 +670,10 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
           mandatory: {
             chromeMediaSource: 'desktop',
             chromeMediaSourceId: sourceId,
+            // 11/10：她每秒只取樣一次、送出去的圖最大 768px，不用錄原始解析度和高張數（以前會跟遊戲搶顯示卡）
+            maxFrameRate: 2,
+            maxWidth: 1280,
+            maxHeight: 800,
           }
         } as any
       });

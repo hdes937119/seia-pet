@@ -3447,8 +3447,32 @@ function trackTools(run: ToolRunner, track: Array<{ name: string; ok: boolean }>
   };
 }
 const CLAIM_RE = /(已經|已)[^。！？\n]{0,24}(放進|放到|傳到|送到|丟進|寫進|搬進|放好|傳好|裝好|傳送過去|送過去)|放進去了|傳過去了|送過去了|丟進去了/;
-let pendingCorrection: { at: number; text: string } | null = null;
+let pendingCorrection: { at: number; text: string; why?: string } | null = null;
+const WORKS_RE = /(修好了|修復好了|修正好了|搞定了|沒問題了|已經正常|跑起來(超級|超|很|非常|蠻|挺)?(順|正常|好)|運作(得)?(很|超)?正常|功能正常|可以正常(運作|使用|跑)|完美運作|測過了|測試過了)/;
+/** 她說「修好了／很順／沒問題了」，但進行中的委託最近一次實際打開檢查（6 小時內）還有問題 → 記下來，下一則提醒她更正 */
+function checkWorkClaims(reply: string, via: string): boolean {
+  const text = String(reply || '');
+  const m = text.match(WORKS_RE);
+  if (!m) return false;
+  const now = Date.now();
+  const bad = commissions.open().filter((c) => {
+    const t = c.lastPlaytest;
+    return t && t.ok && now - t.at < 6 * 3_600_000 && (t.matches === false || (t.problems?.length || 0) > 0 || t.errors.length > 0);
+  });
+  if (!bad.length) return false;
+  const named = bad.filter((c) => text.includes(c.title.slice(0, Math.min(4, c.title.length))));
+  const c = named[0] || (bad.length === 1 ? bad[0] : null);
+  if (!c) return false;
+  const t = c.lastPlaytest!;
+  const i = m.index || 0;
+  const snip = text.slice(Math.max(0, i - 15), i + m[0].length + 10).replace(/\s+/g, ' ');
+  const issues = [...(t.problems || []), ...t.errors].slice(0, 3).join('；') || '跟助手的報告不一致';
+  console.log(`[說了沒做]（${via}）她說「${snip}」，但「${c.title}」最近一次實際打開「${t.page}」還有問題：${issues.slice(0, 120)}`);
+  pendingCorrection = { at: now, text: snip, why: `最近一次實際打開「${t.page}」檢查時還有問題（${issues.slice(0, 200)}）` };
+  return true;
+}
 function checkClaims(reply: string, track: Array<{ name: string; ok: boolean }>, via: string) {
+  if (checkWorkClaims(reply, via)) return;
   const m = String(reply || '').match(CLAIM_RE);
   if (!m || track.some((t) => t.ok)) return;
   const i = m.index || 0;
@@ -3460,6 +3484,7 @@ function takeCorrection(): string {
   const p = pendingCorrection;
   pendingCorrection = null;
   if (!p || Date.now() - p.at > 60 * 60_000) return '';
+  if (p.why) return `\n【要更正】你上一則說「${p.text}」，但${p.why}。這次先老實跟主人說：還沒確認真的好了（也可能是試玩的方式誤判），要等下一次實際打開檢查，或請主人自己試試看，不要再說已經沒問題。`;
   return `\n【要更正】你上一則說「${p.text}」，但那時其實沒有做成（沒有用工具，或工具回來說失敗）。這次先老實跟主人說清楚還沒成功，不要再說已經做好。`;
 }
 /** 重複詞不算的名字：正在進行的委託、最近的作品、資料夾、配件 */
@@ -4545,7 +4570,7 @@ function startWorkFromChat(raw: string, source: 'desktop' | 'line') {
 /** 作品做完：記帳、她看自己的成品寫心得、在桌面上說一聲 */
 /** 請桌寵主程式（Electron）在看不見的視窗裡打開作品試玩：三張截圖＋瀏覽器回報的錯誤。主程式沒開就回 null */
 const PLAYTEST_URL = `http://127.0.0.1:${Number(process.env.PLAYTEST_PORT) || 3002}/playtest`;
-type Playtest = { shots: string[]; logs: { level: string; text: string }[]; text?: string };
+type Playtest = { shots: string[]; logs: { level: string; text: string }[]; text?: string; steps?: string[] };
 async function playtestWork(w: Work): Promise<Playtest | null> {
   try {
     const r = await fetch(PLAYTEST_URL, {
@@ -4563,7 +4588,7 @@ async function playtestWork(w: Work): Promise<Playtest | null> {
       console.warn(`[工坊] 試玩「${w.title}」沒拿到截圖`);
       return null;
     }
-    const pt: Playtest = { shots: j.shots.slice(0, 3), logs: Array.isArray(j.logs) ? j.logs : [], text: String(j.text || '') };
+    const pt: Playtest = { shots: j.shots.slice(0, 3), logs: Array.isArray(j.logs) ? j.logs : [], text: String(j.text || ''), steps: Array.isArray(j.steps) ? j.steps.map(String).slice(0, 10) : [] };
     workshop.savePlaytest(w, pt);
     console.log(`[工坊] 試玩「${w.title}」：${pt.shots.length} 張截圖、${pt.logs.length} 則錯誤／警告`);
     return pt;
@@ -4581,8 +4606,8 @@ function playtestParts(w: Work, pt: Playtest | null): { text: string; images: an
     };
   const errs = (w.playtest?.errors || []).join('\n');
   return {
-    text: `你剛剛實際打開了這個作品試玩：先看剛打開的畫面，然後像第一次玩的人一樣在畫面上點了幾下、左右拖了幾下、按了空白鍵／Enter／方向鍵，再等一下。後面附了三張截圖（依序：剛打開、亂點亂按之後、再等 2.5 秒）。
-畫面上的文字：${String(pt.text || '').slice(0, 400) || '（讀不到）'}
+    text: `你剛剛實際打開了這個作品試玩：先看剛打開的畫面，再照順序按剛打開時看得到的按鈕（每按一顆等 1.5 秒），最後像第一次玩的人一樣亂點、左右拖、按空白鍵／Enter／方向鍵。後面附了三張截圖（依序：剛打開、照順序按完按鈕之後、亂點亂按之後）。
+${pt.steps?.length ? `一步一步做了什麼（程式真的照這樣做；判斷時要對照，例如按了「開始」又按了「暫停」，計時停住是正常的，不是壞掉）：\n${pt.steps.map((x, i) => `${i + 1}. ${x}`).join('\n')}\n` : ''}畫面上的文字：${String(pt.text || '').slice(0, 400) || '（讀不到）'}
 瀏覽器回報的錯誤和警告（Refused to connect／Refused to load 代表那個連網或外部檔案被沙盒擋掉了，那個功能在作品裡等於沒有）：
 ${errs || '（沒有）'}
 以截圖和錯誤訊息為準；原始碼只是參考，用來理解你看到的畫面。只是隨便點幾下，有些玩法可能沒碰到，看不出來的就說看不出來。`,
@@ -4653,7 +4678,7 @@ async function playtestPage(id: string, entry: string): Promise<Playtest | null>
       if (!r.ok) return null;
       const j: any = await r.json();
       if (!j?.ok) return null;
-      return { shots: Array.isArray(j.shots) ? j.shots.slice(0, 3) : [], logs: Array.isArray(j.logs) ? j.logs : [], text: String(j.text || '') };
+      return { shots: Array.isArray(j.shots) ? j.shots.slice(0, 3) : [], logs: Array.isArray(j.logs) ? j.logs : [], text: String(j.text || ''), steps: Array.isArray(j.steps) ? j.steps.map(String).slice(0, 10) : [] };
     } catch {
       return null;
     }
