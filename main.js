@@ -363,8 +363,10 @@ async function playtestWork(workId, file) {
         steps.push(`剛打開：${(await pageText()) || '（讀不到文字）'}`);
         const first = (await listButtons()).map((b) => b.label);
         const clicked = new Set();
+        // 先按剛打開就有的按鈕，再按後來才冒出來的（例如按「開始」後才出現的「暫停」、按了「暫停」變成的「恢復」）
         for (let n = 0; n < 6; n++) {
-            const b = (await listButtons()).find((x) => first.includes(x.label) && !clicked.has(x.label));
+            const now = (await listButtons()).filter((x) => !clicked.has(x.label));
+            const b = now.find((x) => first.includes(x.label)) || now[0];
             if (!b) break;
             clicked.add(b.label);
             wc.sendInputEvent({ type: 'mouseMove', x: b.x, y: b.y });
