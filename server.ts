@@ -3523,7 +3523,17 @@ function chatToolRunner(ctx: { via: 'desktop' | 'line'; userText: string; recent
       case 'workshop_task': {
         const contQ = String(a.continue_from || '').trim();
         const prev = contQ ? workshop.findRecent(contQ) : undefined;
-        if (contQ && !prev) return `找不到要接著改的「${contQ}」。照實跟主人說，或問他是哪一份。`;
+        if (contQ && !prev) {
+          // 11/10：她把委託（例如鬧鐘委託）當成工坊作品來接著改 → 轉成委託的意見，不要說找不到
+          const cm = commissions.mentioned(contQ) || commissions.mentioned(String(a.title || ''));
+          if (cm) {
+            const note = String(a.brief || '').trim().slice(0, 700);
+            if (note) commissions.addFeedback(cm, `（西雅轉達要做的）${note}`, ctx.via);
+            console.log(`[聊天工具] workshop_task 接著改「${contQ}」→ 那是委託「${cm.title}」，改記成委託的意見`);
+            return `「${cm.title}」是委託，不是工坊小作品：委託的檔案在它自己的工作區（工作桌「委託」裡那份是複本），要照階段一輪一輪在背景做，不能用 workshop_task 接著改。${note ? '你剛剛寫的說明已經記成這個委託的意見，下一輪委託工作會照著做（委託會自己在背景開工）。' : ''}要看進度用 commission_status。照實跟主人說，不要說檔案不見了。`;
+          }
+          return `找不到要接著改的「${contQ}」。照實跟主人說，或問他是哪一份。`;
+        }
         let kind = String(a.kind || '').trim();
         if (prev) kind = prev.kind === 'lab' ? (prev.study?.mode === 'program' || !prev.study ? 'program' : 'study') : 'web';
         if (!['web', 'program', 'study'].includes(kind)) kind = 'program';

@@ -282,8 +282,10 @@ async function playtestWork(workId, file) {
     // c- 開頭＝委託的專案工作區（11/8：委託做出的網頁也要實際打開檢查）
     const prefix = /^c-/.test(workId) ? `${APP_URL}/api/commissions/${workId}/ws/` : `${APP_URL}/api/workshop/${workId}/files/`;
     const url = prefix + file.split('/').map(encodeURIComponent).join('/');
-    const W = 400;
-    const H = 400;
+    // 11/10：委託的網頁是給主人在大視窗看的（960×720），用 400×400 試玩時按鈕常常在畫面外面，試玩就按不到
+    const big = /^c-/.test(workId);
+    const W = big ? 800 : 400;
+    const H = big ? 700 : 400;
     const win = new BrowserWindow({
         width: W,
         height: H,
@@ -348,8 +350,8 @@ async function playtestWork(workId, file) {
                     wc.executeJavaScript(
                         `(() => [...document.querySelectorAll('button,[role=button],input[type=button],input[type=submit]')].map((e, i) => {
                             const r = e.getBoundingClientRect(); const st = getComputedStyle(e);
-                            const vis = r.width > 2 && r.height > 2 && st.visibility !== 'hidden' && st.display !== 'none' && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
-                            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), vis, dis: !!e.disabled, label: ((e.innerText || e.value || e.getAttribute('aria-label') || e.title || '').trim() || ('第' + (i + 1) + '個按鈕')).slice(0, 20) };
+                            const vis = r.width > 2 && r.height > 2 && st.visibility !== 'hidden' && st.display !== 'none';
+                            return { x: Math.round(r.left + r.width / 2 + scrollX), y: Math.round(r.top + r.height / 2 + scrollY), vis, dis: !!e.disabled, label: ((e.innerText || e.value || e.getAttribute('aria-label') || e.title || '').trim() || ('第' + (i + 1) + '個按鈕')).slice(0, 20) };
                         }).filter((b) => b.vis && !b.dis))()`,
                         true
                     ),
@@ -369,13 +371,30 @@ async function playtestWork(workId, file) {
             const b = now.find((x) => first.includes(x.label)) || now[0];
             if (!b) break;
             clicked.add(b.label);
-            wc.sendInputEvent({ type: 'mouseMove', x: b.x, y: b.y });
-            wc.sendInputEvent({ type: 'mouseDown', x: b.x, y: b.y, button: 'left', clickCount: 1 });
-            wc.sendInputEvent({ type: 'mouseUp', x: b.x, y: b.y, button: 'left', clickCount: 1 });
+            // 按鈕在畫面外面就先捲過去（座標是整頁的，要換成目前畫面上的）
+            let sx = 0;
+            let sy = 0;
+            try {
+                const pos = await wc.executeJavaScript(`(() => { window.scrollTo(${Math.max(0, b.x - W / 2)}, ${Math.max(0, b.y - H / 2)}); return [scrollX, scrollY]; })()`, true);
+                [sx, sy] = Array.isArray(pos) ? pos : [0, 0];
+                await sleep(150);
+            } catch {
+                // 捲不動就照原本座標按
+            }
+            const cx = b.x - sx;
+            const cy = b.y - sy;
+            wc.sendInputEvent({ type: 'mouseMove', x: cx, y: cy });
+            wc.sendInputEvent({ type: 'mouseDown', x: cx, y: cy, button: 'left', clickCount: 1 });
+            wc.sendInputEvent({ type: 'mouseUp', x: cx, y: cy, button: 'left', clickCount: 1 });
             await sleep(1500);
             steps.push(`按「${b.label}」→ 1.5 秒後：${(await pageText()) || '（讀不到文字）'}`);
         }
         if (!first.length) steps.push('剛打開時沒有看得到、能按的按鈕');
+        try {
+            await wc.executeJavaScript('window.scrollTo(0, 0)', true);
+        } catch {
+            // 沒關係
+        }
         shots.push(await shot());
 
         // 再像第一次玩的人：點畫面上幾個地方、拖一下（拉桿）、按幾個常用鍵

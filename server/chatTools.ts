@@ -21,7 +21,7 @@ export const CHAT_TOOL_DECLS = [
         title: { type: 'string', description: '名稱（12 字內；接著改時可省略，沿用上一份的名字）' },
         brief: { type: 'string', description: '寫給工坊助手的具體說明：主人要什麼（照主人的意思寫清楚）、成品的樣子、你想加的小細節；接著改時寫這次要改什麼（60～300 字）' },
         url: { type: 'string', description: 'study 一定要填（GitHub 或網頁網址）；program 有相關網址也可以填' },
-        continue_from: { type: 'string', description: '要接著改的那一份：作品名，或「上一份」（最近一份主人叫你做的）。新的東西就不要填' },
+        continue_from: { type: 'string', description: '要接著改的那一份工坊作品：作品名，或「上一份」（最近一份主人叫你做的）。新的東西就不要填。委託（create_commission 開的，例如鬧鐘委託）不能用這個接著改，委託要改就用 reply_commission 記意見' },
       },
       required: ['kind', 'brief'],
     },
