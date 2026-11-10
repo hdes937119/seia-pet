@@ -95,6 +95,26 @@ export function repeatPrompt(phrases: string[]): string {
   return `\n【不要重複】你最近幾則已經講過好幾次：${phrases.map((p) => `「${p}」`).join('')}。這次不要再用這些說法或同一個梗；真的想說同一件事就換個講法，或乾脆不提。`;
 }
 
+/**
+ * 11/10 口頭禪：兩三個字的連接詞、開頭語（她 430 則回覆裡 73 則有「既然」），原本 3～8 字的梗檢查抓不到。
+ * 最近 10 則（6 小時內）裡有 3 則以上用了同一個 → 回話前提醒。「本喵」「喵」是角色特色，不算。
+ */
+const TICS = ['既然', '對了', '不過', '畢竟', '難怪', '原來', '簡直', '總之', '反正', '話說', '說到', '果然', '居然', '竟然', '看來', '怪不得', '說真的', '老實說', '換句話說', '順便', '總而言之', '話說回來'];
+export function ticWords(lines: PetLine[], userText = '', now = Date.now()): string[] {
+  const recent = lines.filter((l) => l && l.text && (!l.at || now - l.at <= WINDOW_MS)).slice(-10);
+  if (recent.length < 4) return [];
+  const user = String(userText || '');
+  return TICS.map((w) => [w, recent.filter((l) => cleanReply(l.text).includes(w)).length] as const)
+    .filter(([w, c]) => c >= 3 && !user.includes(w))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([w]) => w);
+}
+export function ticPrompt(tics: string[]): string {
+  if (!tics.length) return '';
+  return `\n【口頭禪】你最近很常用${tics.map((w) => `「${w}」`).join('')}，聽起來有點像固定句型。這次不要用這些詞，直接回應主人的話就好。`;
+}
+
 /** 回完之後檢查：還是用了哪些 */
 export function repeatHits(reply: string, phrases: string[]): string[] {
   const t = cleanReply(reply);

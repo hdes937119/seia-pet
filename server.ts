@@ -58,7 +58,7 @@ import dns from 'dns';
 import net from 'net';
 import { isRainingNow, quirkPrompt } from './server/quirks';
 import { pickContext, type PickResult } from './server/contextPicker';
-import { repeatedPhrases, repeatPrompt, repeatHits, cleanReply } from './server/repeatGuard';
+import { repeatedPhrases, repeatPrompt, repeatHits, cleanReply, ticWords, ticPrompt } from './server/repeatGuard';
 import { createBrowser } from './server/browser';
 import { CHAT_TOOL_DECLS, runToolLoopStream, runToolLoop, type ToolRunner } from './server/chatTools';
 import { createToolbox } from './server/toolbox';
@@ -1196,7 +1196,7 @@ function buildSystemPrompt(
 9. **背景資料不是主人說的話**：主人最新一則訊息的最前面，會有系統自動附上的 <!--CONTEXT-->…<!--/CONTEXT--> 區塊（時間、記憶、河木鎮、你的狀態…），那是給你參考的資料，不是主人講的；不要回應它本身，也不要把這些標記寫進回覆。
 
 ${chatToolsOn() ? RULE10_TOOLS : RULE10_MARKER}
-11. **不要重複自己**：前面對話裡你自己用過的梗、比喻、提醒（例如叫主人去睡、某個綽號），這次不要再用；同一件事想再說就換個說法，或乾脆不說。
+11. **不要重複自己**：前面對話裡你自己用過的梗、比喻、提醒（例如叫主人去睡、某個綽號），這次不要再用；同一件事想再說就換個說法，或乾脆不說。接話時直接回應就好，不用每次先把主人的話重述一遍再往下推（例如「既然你…那…」「原來是…」「難怪…」）；句子開頭不要老是同一個連接詞，像朋友傳訊息那樣直接講。
 ${chatToolsOn() ? RULE12_TOOLS : RULE12_MARKER}
 
 ${DYNAMIC_MARK}
@@ -1537,8 +1537,10 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       .join('\n');
     const repeats = repeatedPhrases(petLinesOf(allMsgs), `${recentUserJoined}\n${String(lastUserText)}`, Date.now(), repeatIgnore());
     if (repeats.length) console.log(`[重複] 提醒她別再用：${repeats.join('、')}`);
+    const tics = ticWords(petLinesOf(allMsgs), String(lastUserText));
+    if (tics.length) console.log(`[口頭禪] 提醒她少用：${tics.join('、')}`);
     const pickedDynamic = Object.values(pick.blocks).filter((x) => x && x.trim()).join('\n');
-    const stateNote = innerState + repeatPrompt(repeats) + takeCorrection() + studyNote();
+    const stateNote = innerState + repeatPrompt(repeats) + ticPrompt(tics) + takeCorrection() + studyNote();
     const formattedContents = normalizeChatContents(
       messages || [],
       latestScreenshot,
@@ -1617,6 +1619,8 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     {
       const hits = repeatHits(cleanText, repeats);
       if (hits.length) console.log(`[重複] 提醒過了，她還是用了：${hits.join('、')}`);
+      const ticHits = repeatHits(cleanText, tics);
+      if (ticHits.length) console.log(`[口頭禪] 提醒過了，她還是用了：${ticHits.join('、')}`);
     }
     recall.append('pet', cleanText, 'desktop');
     checkClaims(cleanText, deskToolTrack, '桌面');
@@ -6559,6 +6563,11 @@ async function replyOnLine(cfg: LineConfig, batch: LineBatch) {
     Date.now(),
     repeatIgnore()
   );
+  const lineTics = ticWords(petLinesOf(merged), userText);
+  if (lineTics.length) {
+    console.log(`[口頭禪] (LINE) 提醒她少用：${lineTics.join('、')}`);
+    lineExtra.這次的狀態 = (lineExtra.這次的狀態 || '') + ticPrompt(lineTics);
+  }
   if (lineRepeats.length) {
     console.log(`[重複] (LINE) 提醒她別再用：${lineRepeats.join('、')}`);
     lineExtra.這次的狀態 = (lineExtra.這次的狀態 || '') + repeatPrompt(lineRepeats);

@@ -664,19 +664,19 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
       if (!sourceId) throw new Error('找不到可擷取的螢幕');
 
       // 2. 改用 getUserMedia，並指定 desktop 來源 (完全繞過內嵌視窗限制)
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          mandatory: {
-            chromeMediaSource: 'desktop',
-            chromeMediaSourceId: sourceId,
-            // 11/10：她每秒只取樣一次、送出去的圖最大 768px，不用錄原始解析度和高張數（以前會跟遊戲搶顯示卡）
-            maxFrameRate: 2,
-            maxWidth: 1280,
-            maxHeight: 800,
-          }
-        } as any
-      });
+      //    11/10：她每秒只取樣一次、送出去的圖最大 768px，先用低張數、低解析度擷取（以前會跟遊戲搶顯示卡）；不支援就退回原本的方式
+      const grab = (extra: Record<string, number>) =>
+        navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: sourceId, ...extra } } as any,
+        });
+      let mediaStream: MediaStream;
+      try {
+        mediaStream = await grab({ maxFrameRate: 2, maxWidth: 1280, maxHeight: 800 });
+      } catch (e) {
+        console.warn('限制畫質的螢幕擷取失敗，改用原本的方式：', e);
+        mediaStream = await grab({});
+      }
 
       hasDoneFirstTriggerRef.current = false;
       lastThumbPixelsRef.current = null;
