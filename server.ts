@@ -64,7 +64,7 @@ import { CHAT_TOOL_DECLS, runToolLoopStream, runToolLoop, type ToolRunner } from
 import { createToolbox } from './server/toolbox';
 import { isWorkshopMissing } from './server/winText';
 import { createHostActions, type ActionPlan } from './server/hostActions';
-import { createCommissions, defaultBudget, APPROVE_RE, NEGATE_RE, STOP_RE, PAUSE_RE, RESUME_RE, type Commission, type ProjectJob, type JobPlaytest } from './server/commission';
+import { createCommissions, defaultBudget, APPROVE_RE, NEGATE_RE, STOP_RE, PAUSE_RE, RESUME_RE, type Commission, type ProjectJob, type JobPlaytest, acceptPassed, autoItems, manualItems } from './server/commission';
 import { createWidgets, type WidgetSource } from './server/widgets';
 import { createDesk } from './server/desk';
 
@@ -3468,26 +3468,28 @@ function trackTools(run: ToolRunner, track: Array<{ name: string; ok: boolean }>
 const CLAIM_RE = /(已經|已)[^。！？\n]{0,24}(放進|放到|傳到|送到|丟進|寫進|搬進|放好|傳好|裝好|傳送過去|送過去)|放進去了|傳過去了|送過去了|丟進去了/;
 let pendingCorrection: { at: number; text: string; why?: string } | null = null;
 const WORKS_RE = /(修好了|修復好了|修正好了|搞定了|沒問題了|已經正常|跑起來(超級|超|很|非常|蠻|挺)?(順|正常|好)|運作(得)?(很|超)?正常|功能正常|可以正常(運作|使用|跑)|完美運作|測過了|測試過了)/;
-/** 她說「修好了／很順／沒問題了」，但進行中的委託最近一次實際打開檢查（6 小時內）還有問題 → 記下來，下一則提醒她更正 */
+/**
+ * 她說「修好了／很順／沒問題了」，但進行中的委託驗收還沒全過 → 記下來，下一則提醒她更正。
+ * 11/11：改成比對程式跑出來的驗收結果（以前比對試玩截圖的判斷，會被誤判拖著走）。
+ */
 function checkWorkClaims(reply: string, via: string): boolean {
   const text = String(reply || '');
   const m = text.match(WORKS_RE);
   if (!m) return false;
   const now = Date.now();
   const bad = commissions.open().filter((c) => {
-    const t = c.lastPlaytest;
-    return t && t.ok && now - t.at < 6 * 3_600_000 && (t.matches === false || (t.problems?.length || 0) > 0 || t.errors.length > 0);
+    const a = c.stages[c.stage]?.acceptance;
+    return c.status === 'active' && a && !acceptPassed(a) && now - (a.updatedAt || 0) < 24 * 3_600_000;
   });
   if (!bad.length) return false;
   const named = bad.filter((c) => text.includes(c.title.slice(0, Math.min(4, c.title.length))));
   const c = named[0] || (bad.length === 1 ? bad[0] : null);
   if (!c) return false;
-  const t = c.lastPlaytest!;
+  const line = commissions.acceptLine(c.stages[c.stage]?.acceptance);
   const i = m.index || 0;
   const snip = text.slice(Math.max(0, i - 15), i + m[0].length + 10).replace(/\s+/g, ' ');
-  const issues = [...(t.problems || []), ...t.errors].slice(0, 3).join('；') || '跟助手的報告不一致';
-  console.log(`[說了沒做]（${via}）她說「${snip}」，但「${c.title}」最近一次實際打開「${t.page}」還有問題：${issues.slice(0, 120)}`);
-  pendingCorrection = { at: now, text: snip, why: `最近一次實際打開「${t.page}」檢查時還有問題（${issues.slice(0, 200)}）` };
+  console.log(`[說了沒做]（${via}）她說「${snip}」，但「${c.title}」${line.slice(0, 120)}`);
+  pendingCorrection = { at: now, text: snip, why: `「${c.title}」的${line.slice(0, 200)}` };
   return true;
 }
 /** 11/10：她手上的東西是哪一類、該用哪個工具（每次回話都附上，不經過選材員） */
@@ -3588,7 +3590,7 @@ function chatToolRunner(ctx: { via: 'desktop' | 'line'; userText: string; recent
           const cm = commissions.mentioned(contQ) || commissions.mentioned(String(a.title || ''));
           if (cm) {
             const note = String(a.brief || '').trim().slice(0, 700);
-            if (note) commissions.addFeedback(cm, `（西雅轉達要做的）${note}`, ctx.via);
+            if (note) commissions.addFeedback(cm, `（西雅轉達要做的）${note}`, ctx.via, ut.slice(0, 600));
             console.log(`[聊天工具] workshop_task 接著改「${contQ}」→ 那是委託「${cm.title}」，改記成委託的意見`);
             return `「${cm.title}」是委託，不是工坊小作品：委託的檔案在它自己的工作區（工作桌「委託」裡那份是複本），要照階段一輪一輪在背景做，不能用 workshop_task 接著改。${note ? '你剛剛寫的說明已經記成這個委託的意見，下一輪委託工作會照著做（委託會自己在背景開工）。' : ''}要看進度用 commission_status。照實跟主人說，不要說檔案不見了。`;
           }
@@ -3673,9 +3675,13 @@ RESULT.md 的摘要要直接講：做出了什麼、怎麼用（要執行哪個�
         if (d === 'resume' && !RESUME_RE.test(ut)) (d = 'note'), (warn = '主人沒有明確說繼續，記成意見。');
         if (d === 'approve' || d === 'changes') {
           const k = commissions.waiting(c);
-          const r = await commissionAnswered(c, d, note, ctx.via);
+          const r = await commissionAnswered(c, d, note, ctx.via, { raw: ut.slice(0, 600) });
           if (!r.ok) return `沒成功：${(r as any).reason || ''}`;
           if ((r as any).continued) return '你那份報告是說這個階段沒做成／卡住，所以主人的回覆記成「繼續做這個階段」（不會跳到下一個階段），下一輪工作會照主人的話接著做。';
+          if (k?.kind === 'accept')
+            return d === 'approve'
+              ? '記下主人同意了驗收清單。程式會在背景自動請工坊寫驗收腳本、再做到全部通過，做好會通知主人；現在還沒做好，不要說已經在做或做好了。'
+              : '記下主人要改驗收清單，下一輪你會照主人的話重寫。';
           if (d === 'approve')
             return (r as any).finished
               ? `「${c.title}」最後一個階段同意了，委託完成。`
@@ -3685,7 +3691,7 @@ RESULT.md 的摘要要直接講：做出了什麼、怎麼用（要執行哪個�
         if (d === 'pause') commissions.setStatus(c, 'paused');
         else if (d === 'resume') commissions.setStatus(c, 'active');
         else if (d === 'drop') commissions.setStatus(c, 'dropped');
-        else commissions.addFeedback(c, note, ctx.via);
+        else commissions.addFeedback(c, note, ctx.via, ut.slice(0, 600));
         console.log(`[委託] 「${c.title}」主人在${ctx.via === 'line' ? ' LINE ' : '聊天'}裡：${d}`);
         return `${warn}${{ pause: '委託暫停了。', resume: '委託繼續。', drop: '委託取消了（工作區和工具會留著）。', note: '意見記下了，下一輪工作會看到。' }[d] || ''}`;
       }
@@ -3706,7 +3712,7 @@ RESULT.md 的摘要要直接講：做出了什麼、怎麼用（要執行哪個�
 主人的委託：${c.direction}
 計畫：${(c.plan || '（還沒寫好）').slice(0, 1000)}
 階段：${c.stages.map((s, i) => `${i + 1}.${s.title}［${{ todo: '還沒開始', doing: '進行中', review: '等主人看', done: '完成' }[s.status]}］`).join(' ')}
-${k ? `正在等主人回覆（${k.kind === 'plan' ? '計畫' : `第 ${(k.stage ?? 0) + 1} 階段`}）：${k.report.slice(0, 700)}${k.ask ? `\n想問主人：${k.ask}` : ''}\n` : ''}${running ? '工坊現在正在做。\n' : ''}${lastJob ? `最近一次工坊工作「${lastJob.goal}」（${lastJob.status === 'done' ? '完成' : '失敗'}）：${(lastJob.result || lastJob.error || '').slice(0, 600)}\n` : ''}${c.tool ? `做好的工具「${c.tool.title}」：${c.tool.desc}${c.runs.length ? `；最近執行${c.runs[c.runs.length - 1].ok ? '成功' : '失敗'}` : ''}\n` : ''}今天花了 NT$${usage.taskCostTwd(commissionTask(c)).toFixed(1)}／${c.dailyBudgetTwd}。`;
+${c.stages[c.stage] ? `目前階段的${commissions.acceptLine(c.stages[c.stage].acceptance)}\n` : ''}${k ? `正在等主人回覆（${k.kind === 'plan' ? '計畫' : `第 ${(k.stage ?? 0) + 1} 階段`}）：${k.report.slice(0, 700)}${k.ask ? `\n想問主人：${k.ask}` : ''}\n` : ''}${running ? '工坊現在正在做。\n' : ''}${lastJob ? `最近一次工坊工作「${lastJob.goal}」（${lastJob.status === 'done' ? '完成' : '失敗'}）：${(lastJob.result || lastJob.error || '').slice(0, 600)}\n` : ''}${c.tool ? `做好的工具「${c.tool.title}」：${c.tool.desc}${c.runs.length ? `；最近執行${c.runs[c.runs.length - 1].ok ? '成功' : '失敗'}` : ''}\n` : ''}今天花了 NT$${usage.taskCostTwd(commissionTask(c)).toFixed(1)}／${c.dailyBudgetTwd}。`;
       }
       case 'plan_actions': {
         const plan = await hostActions.create({ title: String(a.title || ''), why: String(a.why || ''), steps: Array.isArray(a.steps) ? a.steps : [], from: ctx.via === 'line' ? 'LINE 聊天' : '聊天' });
@@ -3922,10 +3928,11 @@ ${COMMISSION_CAPABILITIES}
 }
 
 /** 主人回覆了檢查點（聊天、LINE、面板都走這裡） */
-async function commissionAnswered(c: Commission, decision: 'approve' | 'changes', note: string, via: string, opts: { force?: boolean } = {}) {
+async function commissionAnswered(c: Commission, decision: 'approve' | 'changes', note: string, via: string, opts: { force?: boolean; raw?: string } = {}) {
   const k = commissions.waiting(c);
   const r = commissions.answer(c, decision, note, via, opts);
   if (!r.ok) return r;
+  kickCommissions();
   if (k?.kind === 'plan' && decision === 'changes') void usageTask(commissionTask(c), () => planCommission(c));
   if (r.finished) await commissionNotify(`「${c.title}」完成了！`, `「${c.title}」全部的階段都完成了，謝謝主人一路幫我看～`, 'proud');
   return r;
@@ -3981,11 +3988,11 @@ function handleCommissionMarkers(raw: string, userText: string, via: 'desktop' |
     if (d === 'pause' && !PAUSE_RE.test(ut)) d = 'note';
     if (d === 'resume' && !RESUME_RE.test(ut)) d = 'note';
     const note = String(req.note || '').trim() || ut.slice(0, 500);
-    if (d === 'approve' || d === 'changes') void commissionAnswered(c, d, note, via);
+    if (d === 'approve' || d === 'changes') void commissionAnswered(c, d, note, via, { raw: ut.slice(0, 600) });
     else if (d === 'pause') commissions.setStatus(c, 'paused');
     else if (d === 'resume') commissions.setStatus(c, 'active');
     else if (d === 'drop') commissions.setStatus(c, 'dropped');
-    else commissions.addFeedback(c, note, via);
+    else commissions.addFeedback(c, note, via, ut.slice(0, 600));
     if (d !== 'note') console.log(`[委託] 「${c.title}」主人在${via === 'line' ? ' LINE ' : '聊天'}裡：${d}`);
   }
 }
@@ -3995,18 +4002,37 @@ const COMMISSION_TOOLS = [
   {
     name: 'project_work',
     description:
-      '請工坊助手在這個委託的「專案工作區」寫程式、實際執行、抓公開資料（Python 3 標準函式庫／Node.js 內建模組，不能裝套件，可以連網）。工作區會保存下來：上次寫的程式、收集的資料、助手自己的交接筆記 HANDOFF.md 都還在，這次接著做。goal＝這次要做到的具體目標（大約 10 分鐘的工作量）；detail＝你查到的網址、資料格式、主人的要求等細節。做好的程式如果主人可以直接用，助手會寫 TOOL.json 登記成工具。要幾分鐘，結果下一輪看得到。',
+      '探路用：請工坊助手在這個委託的「專案工作區」先試一件小事（試抓資料來源、確認某個做法行不行、整理現有程式），大約 10 分鐘。這不算做完階段——階段要做完，是驗收清單同意後由程式自動「做到驗收通過」。goal＝這次要試的；detail＝查到的網址、資料格式等細節。結果下一輪看得到。',
     parametersJsonSchema: { type: 'object', properties: { goal: { type: 'string' }, detail: { type: 'string' } }, required: ['goal'] },
   },
   {
     name: 'stage_report',
     description:
-      '跟主人報告這個階段的成果並等主人點頭（主人同意前不會往下一個階段）；卡住需要主人決定時也用它。summary＝做到什麼、實際跑出來的結果、主人怎麼用、還有什麼問題（誠實，300 字內）；ask＝要主人決定或回答的事（可省略）；outcome＝done（這個階段的目標做到了，有實際證據）或 stuck（沒做到、卡住、要主人幫忙或決定）。',
+      '跟主人報告並等主人回覆。outcome＝stuck（試過了做不到、要主人幫忙或決定，例如資料抓不到要換方向）、changed（你改了做法或計畫，想讓主人知道）、done（只有驗收全部通過、或這個階段沒有要程式檢查的項目時才能用；驗收全過時程式會自己交報告，通常不用你報）。summary＝實際情況（誠實，300 字內）；ask＝要主人決定或回答的事（可省略）。',
     parametersJsonSchema: {
       type: 'object',
-      properties: { summary: { type: 'string' }, ask: { type: 'string' }, outcome: { type: 'string', enum: ['done', 'stuck'] } },
+      properties: { summary: { type: 'string' }, ask: { type: 'string' }, outcome: { type: 'string', enum: ['done', 'stuck', 'changed'] } },
       required: ['summary', 'outcome'],
     },
+  },
+  {
+    name: 'define_acceptance',
+    description:
+      '寫「這個階段怎樣才算做完」的驗收清單，交給主人看（主人同意後，程式會請工坊把它寫成驗收腳本、再做到全部通過，不用你一步步交代）。每個階段開始時先寫；主人要改、或你發現標準不對時重寫。items＝3～12 條具體、可以檢查的句子（例如「按開始後 1 秒內時間開始減少」「時間到會呼叫 seia.say(提醒文字)」）；auto＝true 是程式測得到的，false 是要主人自己看的（好不好看、聲音、裝成配件後實際會不會響）。note＝補充（可省略）。',
+    parametersJsonSchema: {
+      type: 'object',
+      properties: {
+        items: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, auto: { type: 'boolean' } }, required: ['text', 'auto'] } },
+        note: { type: 'string' },
+      },
+      required: ['items'],
+    },
+  },
+  {
+    name: 'build_stage',
+    description:
+      '請工坊再做一次「做到驗收通過」（驗收腳本已經鎖好時才能用；第一次程式會自動開工，這個是上一次沒全過、你想好怎麼調整之後再試）。detail＝你的判斷和提示：上次哪幾項沒過、可能的原因、建議的做法。',
+    parametersJsonSchema: { type: 'object', properties: { detail: { type: 'string' } }, required: ['detail'] },
   },
   {
     name: 'update_plan',
@@ -4054,14 +4080,18 @@ ${c.plan || '（沒有）'}
 階段：
 ${c.stages.map((s, i) => `${i + 1}. ${s.title}［${{ todo: '還沒開始', doing: '進行中', review: '等主人看', done: '完成' }[s.status]}］：${s.goal}`).join('\n')}
 ${st ? `現在是第 ${c.stage + 1} 階段「${st.title}」：${st.goal}` : ''}
+${st ? acceptanceBlock(c) : ''}
 ${fresh.length ? `主人新的意見（這一輪一定要回應、照著調整）：\n${fresh.map((f) => `- ${f}`).join('\n')}\n` : ''}${replies.length ? `主人對你報告的回覆：\n${replies.map((k) => `- ${k.status === 'approved' ? '同意' : '要修改'}${k.reply ? `：${k.reply}` : ''}`).join('\n')}\n` : ''}工坊助手的交接筆記（HANDOFF.md）：
 ${handoff || '（還沒有：工作區是空的，第一次開工）'}
 ${lastJob ? `最近一次工坊工作「${lastJob.goal}」：${lastJob.status === 'done' ? '完成' : '失敗'}\n${(lastJob.result || lastJob.error || '').slice(0, 1500)}\n` : ''}${playtestLine(c)}${c.tool ? `已經有給主人的工具「${c.tool.title}」（${c.tool.run}）：${c.tool.desc}${c.runs.length ? `；最近執行：${c.runs.slice(-3).map((r) => `${new Date(r.at).toLocaleString('zh-TW', { hour12: false })} ${r.ok ? '成功' : `失敗：${r.output.slice(-150)}`}`).join('；')}` : ''}\n` : ''}今天這個委託花了 NT$${usage.taskCostTwd(commissionTask(c)).toFixed(1)}／${c.dailyBudgetTwd}。`;
   const extraSystem = `【這次是主人的委託，不是你自己的題目】主人的委託和意見最優先，照計畫一階段一階段做：
-- 寫程式、抓資料、做工具一律用 project_work（交給工坊助手在專案工作區做，程式和資料會保存下來）；一次給一個具體、做得完的目標，並把查到的網址、資料格式寫進 detail。先用 web_search、read_page 查好資料來源再開工，比較不會白做。
-- project_work 是非同步的：開工之後這一輪就用 finish_cycle 收尾，下一輪再看結果。
-- 這個階段的目標做到了（有實際跑出來的證據），就用 stage_report（outcome＝done）跟主人報告、等主人點頭；沒做到不要報告完成。卡住需要主人決定（例如資料抓不到要換方向）也用 stage_report 問，outcome 填 stuck。
-- 做出網頁時，程式會在工作做完後實際打開它試玩，你會看到「實際打開檢查」的結果（看到什麼、錯誤訊息、問題）。網頁長什麼樣、能不能用，只能照實際打開看到的說；工坊助手 STEP_RESULT 裡寫的網頁效果只是它的說法。看到錯誤或問題，先用 project_work 交代修正（把看到的問題寫進 detail），修好、再看過才報告完成。試玩只是隨便點幾下、聲音是關掉的，沒碰到的功能要照實說「還沒測到」。
+- 11/11 起的做法（工坊 2.0）：每個階段先用 define_acceptance 寫「怎樣算做完」的驗收清單交給主人看。主人同意後，程式會自動請工坊把清單寫成驗收腳本、驗過腳本本身沒寫錯，再請工坊一口氣做到腳本全部通過，最後用原本的腳本獨立重驗一次。全部通過時程式會自己交檢查點給主人。你負責的是：定標準、看結果、做決定。
+- 清單要具體、可以檢查（「暫停後時間停住」比「暫停功能正常」好）；程式測不到的（好不好看、聲音、裝成配件後實際會不會響）標成 auto＝false 給主人看。主人說要改清單，就照主人原話重寫。
+- 驗收沒全過：看「驗收」那一段哪幾項沒過、為什麼，再決定——用 build_stage 帶著你的判斷再做一次、用 define_acceptance 改標準（標準本身不對時）、用 update_plan 改計畫，或用 stage_report（stuck）問主人。
+- 驗收腳本沒寫成：看原因，通常改寫清單（define_acceptance）讓它更具體就好。
+- 還不確定做法、要先試資料來源時，可以用 project_work 探路；探路不算做完。
+- 這些都是非同步的：送出之後這一輪就用 finish_cycle 收尾，程式會在有結果時叫你。
+- 「做好了沒」只看驗收結果（程式跑出來的數字），不看工坊助手自己的說法；試玩截圖只是給主人參考的附件。
 - 給主人的工具說「重新產生／更新資料」，就要真的每次跑出不同或更新的結果；只是把寫死的內容再寫一次不算。
 - 主人要你改計畫時用 update_plan。
 - 不要開跟委託無關的題目、不要做工坊小作品或畫圖。`;
@@ -4074,10 +4104,41 @@ ${lastJob ? `最近一次工坊工作「${lastJob.goal}」：${lastJob.status ==
         research.append(p!.id, 'try', `請工坊助手在專案工作區做：${String(a.goal).slice(0, 200)}${a.detail ? `（${String(a.detail).slice(0, 300)}）` : ''}`);
         return '工坊開工了（專案工作區），大概要幾分鐘到十幾分鐘。結果下一輪看得到；這一輪可以收尾了。';
       }
+      case 'define_acceptance': {
+        const items = Array.isArray(a.items) ? a.items : [];
+        const r = commissions.defineAcceptance(c, items, String(a.note || ''));
+        if (!r.ok) return `沒送出：${r.reason}`;
+        const acc = c.stages[c.stage]?.acceptance;
+        research.append(p!.id, 'note', `第 ${c.stage + 1} 階段的驗收清單：${(acc?.items || []).map((it, i) => `${i + 1}.${it.auto ? '' : '（主人看）'}${it.text}`).join(' ')}`.slice(0, 800));
+        await commissionNotify(
+          `「${c.title}」第 ${c.stage + 1} 階段，怎樣算做完？`,
+          `「${c.title}」第 ${c.stage + 1} 階段「${c.stages[c.stage]?.title || ''}」我想這樣算做完：\n${r.checkpoint?.report || ''}\n\n可以的話回我「可以」，要加要改直接說～同意之後工坊會自己做到全部通過。`
+        );
+        return '驗收清單送給主人看了；主人同意後程式會自動請工坊寫腳本、做到通過。這一輪可以收尾了。';
+      }
+      case 'build_stage': {
+        const acc = c.stages[c.stage]?.acceptance;
+        if (!acc || acc.status !== 'ready') return `現在還不能做：${commissions.acceptLine(acc)}。`;
+        const detail = String(a.detail || '').trim();
+        const r = commissions.startJob(c, `第 ${c.stage + 1} 階段做到驗收通過（再試一次）`, detail, onCommissionJobDone, 'build');
+        if (!r.ok) return `工坊現在不能開工：${r.reason}`;
+        research.append(p!.id, 'try', `請工坊再做一次、做到驗收通過：${detail.slice(0, 400)}`);
+        return '工坊開工了（一口氣做到驗收通過，最多 40 分鐘）。結果出來程式會叫你；這一輪可以收尾了。';
+      }
       case 'stage_report': {
         const summary = String(a.summary || '').trim();
         if (!summary) return '報告是空的。';
-        const stuck = a.outcome ? String(a.outcome) === 'stuck' : STUCK_RE.test(summary);
+        const outcome = String(a.outcome || '');
+        const accNow = c.stages[c.stage]?.acceptance;
+        if (outcome === 'done' && !acceptPassed(accNow))
+          return `還不能報告做完：${commissions.acceptLine(accNow)}。做完要以驗收結果為準；要問主人或說明改了做法，outcome 用 stuck 或 changed。`;
+        if (outcome === 'changed') {
+          commissions.addFeedback(c, `（西雅跟主人說明）${summary.slice(0, 500)}`, 'seia');
+          research.append(p!.id, 'note', `跟主人說明改了做法：${summary.slice(0, 500)}`);
+          await commissionNotify(`「${c.title}」我調整了做法`, `「${c.title}」第 ${c.stage + 1} 階段：\n${summary}${a.ask ? `\n\n想問你：${a.ask}` : ''}`);
+          return '跟主人說了（這不是檢查點，不用等主人回覆就能繼續）。這一輪可以收尾了。';
+        }
+        const stuck = outcome ? outcome === 'stuck' : STUCK_RE.test(summary);
         // 有網頁的話，把實際打開檢查的結果附在報告後面（主人看得到證據，不只是她的說法）
         const page = commissions.pickPage(c);
         const t = latestPlaytest(c);
@@ -4143,7 +4204,9 @@ async function onCommissionJobDone(c: Commission, j: ProjectJob) {
       return;
     }
     if (pid) research.append(pid, 'result', `專案工作「${j.goal.slice(0, 60)}」失敗了：${String(j.error || '').slice(0, 400)}`);
+    afterAcceptJob(c, j);
     if (eventClients.size && proactive.request('discovery')) pushEvent('pet-says', { text: `嗚…委託「${c.title}」這次在工坊沒做成`.slice(0, 50), emotion: 'sad' });
+    kickCommissions();
     return;
   }
   const text = String(j.result || j.answer || '');
@@ -4154,8 +4217,80 @@ async function onCommissionJobDone(c: Commission, j: ProjectJob) {
     for (let i = 0; i < 2 && first + i * 780 < text.length; i++) research.append(pid, 'note', `（STEP_RESULT.md 續）${text.slice(first + i * 780, first + (i + 1) * 780)}`);
   }
   console.log(`[委託] 「${c.title}」工作完成，結果寫回筆記（${text.length} 字）`);
-  if (commissions.pickPage(c)) await commissionPlaytest(c, j);
+  const acc = c.stages[j.stage ?? c.stage]?.acceptance;
+  if (j.kind === 'accept') {
+    afterAcceptJob(c, j);
+    if (acc?.status === 'ready' && pid) research.append(pid, 'result', `驗收腳本寫好、鎖住了（${acc.selfCheck || ''}）；寫好時對當時的成品跑：${acc.lastRun ? `${acc.lastRun.pass}/${acc.lastRun.total}` : '—'}`);
+    if (acc?.status === 'ready' && !acc.buildPending && acceptPassed(acc)) await commissionStageDone(c, j);
+  } else if (j.kind === 'build') {
+    if (pid && j.accept) research.append(pid, 'result', `做到驗收通過：獨立重驗 ${j.accept.pass}/${j.accept.total}${j.accept.tampered ? '（助手動過驗收腳本，已換回）' : ''}${j.accept.failing.length ? `；沒過：${j.accept.failing.slice(0, 4).join('；')}` : ''}`.slice(0, 800));
+    if (acceptPassed(acc)) {
+      if (commissions.pickPage(c)) await commissionPlaytest(c, j);
+      await commissionStageDone(c, j);
+    }
+  } else if (commissions.pickPage(c)) await commissionPlaytest(c, j);
   if (eventClients.size && proactive.request('discovery')) pushEvent('pet-says', { text: `委託「${c.title}」又往前做了一步喵`.slice(0, 50), emotion: 'happy' });
+  kickCommissions();
+}
+
+/** 寫驗收腳本那件沒成功：第一次自動再試一次，之後交給她決定 */
+function afterAcceptJob(c: Commission, j: ProjectJob) {
+  if (j.kind !== 'accept') return;
+  const acc = c.stages[j.stage ?? c.stage]?.acceptance;
+  if (acc && acc.status === 'failed' && (acc.tries || 0) < 2) {
+    acc.status = 'approved';
+    acc.updatedAt = Date.now();
+    commissions.save();
+    console.log(`[委託] 「${c.title}」驗收腳本沒寫成，自動再試一次：${(acc.failReason || '').slice(0, 100)}`);
+  }
+}
+
+/** 工作做完、主人回覆之後：不用等 5 分鐘的排程，馬上看下一步 */
+function kickCommissions() {
+  setTimeout(() => void commissionTick(), 5000);
+}
+
+/** 11/11：驗收全過 → 程式自己交檢查點（數字由程式寫；她不用、也不能自己報做完） */
+async function commissionStageDone(c: Commission, j: ProjectJob) {
+  const i = j.stage ?? c.stage;
+  const st = c.stages[i];
+  const acc = st?.acceptance;
+  if (!st || !acc || i !== c.stage || commissions.waiting(c)) return;
+  const r = acc.lastRun;
+  const auto = autoItems(acc);
+  const manual = manualItems(acc);
+  const pt = j.playtest;
+  const report = `第 ${i + 1} 階段「${st.title}」做好了：程式在乾淨的資料夾用原本的驗收腳本重驗，${r ? `${r.pass}/${r.total}` : '全部'} 全過${r?.kind === 'baseline' ? '（寫好腳本時現有的成品就已經全過）' : ''}。
+程式檢查過的：
+${auto.map((it, n) => `${n + 1}. ${it.text}`).join('\n')}
+${manual.length ? `\n要主人自己看的：\n${manual.map((it) => `・${it.text}`).join('\n')}\n` : ''}${pt?.ok && pt.shots ? `\n（試玩截圖 ${pt.shots} 張在面板，只是參考）` : ''}${j.result ? `\n\n工坊助手的說明：${j.result.replace(/\s+/g, ' ').slice(0, 300)}` : ''}`;
+  commissions.addCheckpoint(c, 'stage', report, manual.length ? `這幾項要你親自看看：${manual.map((it) => it.text).join('；')}` : '', { auto: true });
+  if (c.projectId) research.append(c.projectId, 'note', `第 ${i + 1} 階段驗收全過，程式交了檢查點給主人。`);
+  console.log(`[委託] 「${c.title}」第 ${i + 1} 階段驗收全過，自動交檢查點`);
+  await commissionNotify(
+    `「${c.title}」第 ${i + 1} 階段做好了！`,
+    `「${c.title}」第 ${i + 1} 階段「${st.title}」驗收 ${r ? `${r.pass}/${r.total}` : ''} 全過了喵～${manual.length ? `\n還有幾項要你親自看：\n${manual.map((it) => `・${it.text}`).join('\n')}` : ''}\n\n沒問題的話回我「可以」，要改哪裡直接說～`,
+    'proud'
+  );
+}
+
+/** 11/11：給她那一輪的開場——這個階段的驗收狀態（數字由程式產生） */
+function acceptanceBlock(c: Commission): string {
+  const a = c.stages[c.stage]?.acceptance;
+  if (!a) return '這個階段的驗收清單：還沒寫 → 這一輪先用 define_acceptance 寫「怎樣算做完」交給主人看。\n';
+  const list = a.items.map((it, i) => `  ${i + 1}. ${it.auto ? '' : '（主人看）'}${it.text}`).join('\n');
+  const r = a.lastRun;
+  const tail =
+    a.status === 'review'
+      ? commissions.waiting(c)
+        ? '→ 等主人看清單。'
+        : `→ 主人要改清單${a.note ? `（${a.note.slice(-200)}）` : ''}：照主人的話用 define_acceptance 重寫。`
+      : a.status === 'failed'
+        ? `→ 工坊寫驗收腳本沒成功：${(a.failReason || '').slice(0, 300)}。想想清單是不是不夠具體，用 define_acceptance 改寫（或 stage_report stuck 問主人）。`
+        : a.status === 'ready' && r && r.kind === 'build' && !acceptPassed(a)
+          ? `→ 上次做到 ${r.pass}/${r.total}${r.tampered ? '（助手偷改了驗收腳本，已換回原本的）' : ''}。沒過的：\n${r.failing.map((f) => `    ・${f}`).join('\n') || '    （沒有列出）'}\n  驗收輸出最後一段：\n${r.output.slice(-800)}\n  決定下一步：build_stage（帶著你的判斷再做）、define_acceptance（標準不對）、update_plan、或 stage_report stuck 問主人。`
+          : '';
+  return `這個階段的驗收清單（${commissions.acceptLine(a)}）：\n${list}\n${a.selfCheck ? `腳本自我檢查：${a.selfCheck}\n` : ''}${tail}\n`;
 }
 
 /** 卡住的報告（她沒填 outcome 時的備援判斷） */
@@ -4296,6 +4431,20 @@ async function commissionTick() {
         await commissionNotify(`工具「${c.tool?.title}」一直失敗，我先把排程關了`, `「${c.title}」的工具「${c.tool?.title}」排程連續失敗 3 次，我先把自動執行關掉了。最後一次的訊息：\n${r.run.output.slice(-500)}`, 'sad');
     }
     if (process.env.COMMISSION === 'false' || !getAiClient()) return;
+    // 11/11 工坊 2.0：程式自己就能往下走的（寫驗收腳本、做到通過），不用等她想
+    for (const c of commissions.open()) {
+      const step = commissions.nextAuto(c);
+      if (!step) continue;
+      if (workshop.isBusy()) return;
+      if (usage.taskCostTwd(commissionTask(c)) >= c.dailyBudgetTwd) continue;
+      const st = c.stages[c.stage];
+      const r = commissions.startJob(c, step === 'accept' ? `寫第 ${c.stage + 1} 階段「${st?.title || ''}」的驗收腳本` : `第 ${c.stage + 1} 階段「${st?.title || ''}」做到驗收通過`, '', onCommissionJobDone, step);
+      if (r.ok) {
+        console.log(`[委託] 「${c.title}」程式自動開工：${step === 'accept' ? '寫驗收腳本' : '做到驗收通過'}`);
+        return;
+      }
+      console.log(`[委託] 「${c.title}」自動開工沒成功：${r.reason}`);
+    }
     for (const c of commissions.open()) {
       if (c.status === 'planning' && !c.plan && !planningNow.has(c.id) && (planAttempts.get(c.id) || 0) < 3) {
         await usageTask(commissionTask(c), () => planCommission(c));

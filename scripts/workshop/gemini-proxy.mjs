@@ -7,6 +7,8 @@
 // 11/5 起轉接站自己從標準輸入讀（SEIA_KEY_STDIN=1），不放在環境變數裡，所以 /proc/<pid>/environ 也看不到；舊的 SEIA_REAL_KEY 仍可用。
 // 轉接站送出請求前才換成真的。另外只放行 Gemini API 的路徑、只允許指定的模型（SEIA_ALLOWED_MODELS），
 // 這件工作累計的 token 超過 SEIA_MAX_TOKENS 就擋下（429）。
+// 11/11：快取命中的 prompt token 只算 SEIA_CACHE_WEIGHT（預設 0.25）——每一步都會把前面的對話重送一次，
+// 重送的部分大多是快取、實際便宜很多，全額算會讓「讀程式再改」的工作還沒動手就用完額度。
 import http from 'node:http';
 
 const PORT = Number(process.env.SEIA_PROXY_PORT || 8787);
@@ -42,6 +44,10 @@ const ALLOWED_MODELS = String(process.env.SEIA_ALLOWED_MODELS || '')
   .map((m) => m.trim().replace(/^models\//, ''))
   .filter(Boolean);
 const MAX_TOKENS = Number(process.env.SEIA_MAX_TOKENS) || 0;
+const CACHE_WEIGHT = (() => {
+  const w = Number(process.env.SEIA_CACHE_WEIGHT);
+  return Number.isFinite(w) && w >= 0 && w <= 1 ? w : 0.25;
+})();
 const deny = (res, code, message) => {
   res.writeHead(code, { 'content-type': 'application/json' });
   res.end(JSON.stringify({ error: { code, message: `seia proxy: ${message}` } }));
@@ -51,13 +57,16 @@ const sigs = new Map(); // tool_call id → extra_content
 // 用量：把每次回應的 usage 加總，寫到 SEIA_USAGE_FILE（桌寵用來記帳、算預算）
 import fs from 'node:fs';
 const USAGE_FILE = process.env.SEIA_USAGE_FILE || '';
-const total = { calls: 0, prompt: 0, cached: 0, output: 0, model: '', capped: false, keyMode: REAL_KEY ? 'proxy' : 'passthrough' };
+const total = { calls: 0, prompt: 0, cached: 0, output: 0, counted: 0, model: '', capped: false, keyMode: REAL_KEY ? 'proxy' : 'passthrough' };
+/** 算進額度的量：沒快取的 prompt 全算、快取的打折、output 全算 */
+const counted = () => Math.round(Math.max(0, total.prompt - total.cached) + total.cached * CACHE_WEIGHT + total.output);
 function addUsage(u, model) {
   if (!u || typeof u !== 'object') return;
   total.calls++;
   total.prompt += Number(u.prompt_tokens) || 0;
   total.cached += Number(u.prompt_tokens_details?.cached_tokens) || 0;
   total.output += (Number(u.completion_tokens) || 0);
+  total.counted = counted();
   if (model) total.model = model;
   if (USAGE_FILE) try { fs.writeFileSync(USAGE_FILE, JSON.stringify(total)); } catch {}
 }
@@ -106,12 +115,12 @@ http
     // 只放行 Gemini API 的路徑
     if (!/^\/v1(beta)?\//.test(String(req.url || ''))) return deny(res, 403, 'path not allowed');
     // 這件工作的額度用完了
-    if (MAX_TOKENS && total.prompt + total.output >= MAX_TOKENS) {
+    if (MAX_TOKENS && counted() >= MAX_TOKENS) {
       if (!total.capped) {
         total.capped = true;
         if (USAGE_FILE) try { fs.writeFileSync(USAGE_FILE, JSON.stringify(total)); } catch {}
       }
-      return deny(res, 429, `token budget for this job is used up (${MAX_TOKENS})`);
+      return deny(res, 429, `token budget for this job is used up (${MAX_TOKENS}; cached tokens counted at ${CACHE_WEIGHT})`);
     }
     try {
       const chunks = [];
@@ -186,6 +195,6 @@ http
     }
   })
   .listen(PORT, '127.0.0.1', () => {
-    console.log(`[工坊轉接站] http://127.0.0.1:${PORT}（金鑰：${REAL_KEY ? '轉接站代填' : '照 dsh 傳來的'}；模型：${ALLOWED_MODELS.join(',') || '不限'}；上限：${MAX_TOKENS || '不限'} tokens）`);
+    console.log(`[工坊轉接站] http://127.0.0.1:${PORT}（金鑰：${REAL_KEY ? '轉接站代填' : '照 dsh 傳來的'}；模型：${ALLOWED_MODELS.join(',') || '不限'}；上限：${MAX_TOKENS || '不限'} tokens，快取算 ${CACHE_WEIGHT}）`);
     if (USAGE_FILE) try { fs.writeFileSync(USAGE_FILE, JSON.stringify(total)); } catch {}
   });

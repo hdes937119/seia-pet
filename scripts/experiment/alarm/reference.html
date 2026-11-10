@@ -1,0 +1,26 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><title>ref</title></head><body>
+<label><input type="radio" name="mode" id="mode-countdown" value="countdown" checked>倒數</label>
+<label><input type="radio" name="mode" id="mode-clock" value="clock">定時</label>
+<input id="minutes" type="number" value="0"><input id="seconds" type="number" value="10">
+<input id="clock-time" type="time"><input id="message" type="text">
+<button id="start">開始</button><button id="pause" disabled>暫停</button>
+<div id="display">00:00</div><div id="note"></div>
+<script>
+const $ = (i) => document.getElementById(i);
+let endAt = 0, left = 0, timer = null, paused = false;
+const fmt = (s) => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60, p = (n) => String(n).padStart(2, '0'); return h ? `${p(h)}:${p(m)}:${p(x)}` : `${p(m)}:${p(x)}`; };
+function tick() { const s = Math.ceil((endAt - Date.now()) / 1000); if (s <= 0) return done(); $('display').textContent = fmt(s); }
+function done() { clearInterval(timer); timer = null; const t = $('message').value || '時間到！'; $('display').textContent = '00:00'; $('note').textContent = t; $('start').disabled = false; $('pause').disabled = true; $('pause').textContent = '暫停'; try { if (window.seia) window.seia.say(t); } catch (e) {} }
+$('start').addEventListener('click', () => {
+  let secs;
+  if ($('mode-clock').checked) { const [h, m] = String($('clock-time').value).split(':').map(Number); if (!Number.isFinite(h) || !Number.isFinite(m)) { $('note').textContent = '請輸入時間'; return; } const t = new Date(); t.setHours(h, m, 0, 0); if (t <= new Date()) t.setDate(t.getDate() + 1); secs = (t - Date.now()) / 1000; }
+  else { const m = parseInt($('minutes').value, 10) || 0, s = parseInt($('seconds').value, 10) || 0; secs = m * 60 + s; }
+  if (!(secs > 0)) { $('note').textContent = '請輸入大於 0 的時間'; return; }
+  endAt = Date.now() + secs * 1000; paused = false; $('start').disabled = true; $('pause').disabled = false; $('pause').textContent = '暫停'; $('note').textContent = '';
+  clearInterval(timer); timer = setInterval(tick, 200); tick();
+});
+$('pause').addEventListener('click', () => {
+  if (!paused) { paused = true; left = endAt - Date.now(); clearInterval(timer); timer = null; $('pause').textContent = '恢復'; }
+  else { paused = false; endAt = Date.now() + left; $('pause').textContent = '暫停'; timer = setInterval(tick, 200); tick(); }
+});
+</script></body></html>

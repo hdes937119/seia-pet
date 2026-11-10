@@ -5,21 +5,86 @@ import React, { useCallback, useEffect, useState } from 'react';
  * 執行她做好的工具（不花 AI 額度）、排程。見 server/commission.ts。
  */
 
+interface AcceptRun {
+  at: number;
+  code: number;
+  pass: number;
+  total: number;
+  failing: string[];
+  output: string;
+  tampered?: boolean;
+  kind: 'baseline' | 'build';
+}
+/** 11/11 工坊 2.0：這個階段怎樣算做完 */
+interface Acceptance {
+  items: Array<{ text: string; auto: boolean }>;
+  status: 'review' | 'approved' | 'writing' | 'ready' | 'failed';
+  note?: string;
+  run?: string;
+  selfCheck?: string;
+  failReason?: string;
+  buildPending?: boolean;
+  builds?: number;
+  lastRun?: AcceptRun;
+}
 interface Stage {
   title: string;
   goal: string;
   status: 'todo' | 'doing' | 'review' | 'done';
+  acceptance?: Acceptance;
+}
+const ACC_STATUS: Record<Acceptance['status'], string> = {
+  review: '📝 清單等你看（或她在照你的意見重寫）',
+  approved: '⏳ 你同意了，等工坊寫驗收腳本',
+  writing: '🔧 工坊正在寫驗收腳本',
+  ready: '🔒 驗收腳本驗過、鎖住了',
+  failed: '✘ 驗收腳本沒寫成',
+};
+function AcceptanceView({ a }: { a: Acceptance }) {
+  const r = a.lastRun;
+  const passed = a.status === 'ready' && r && !r.tampered && r.total > 0 && r.pass === r.total;
+  return (
+    <div className="ml-3 rounded bg-slate-900/70 border border-slate-700/60 p-1.5 space-y-0.5">
+      <p className="text-[10px] text-slate-300">
+        驗收：{ACC_STATUS[a.status]}
+        {a.status === 'ready' && a.buildPending ? '・等工坊開工做到通過' : ''}
+        {a.builds ? `・做了 ${a.builds} 次` : ''}
+      </p>
+      {a.items.map((it, i) => (
+        <p key={i} className="text-[10px] text-slate-400">
+          {it.auto ? '🤖' : '👀'} {it.text}
+        </p>
+      ))}
+      {a.selfCheck && <p className="text-[10px] text-slate-500">腳本自我檢查：{a.selfCheck}</p>}
+      {a.status === 'failed' && a.failReason && <p className="text-[10px] text-rose-300 whitespace-pre-wrap">{a.failReason}</p>}
+      {r && (
+        <p className={`text-[10px] ${passed ? 'text-emerald-300' : 'text-amber-200'}`}>
+          {r.kind === 'build' ? '獨立重驗' : '寫好腳本時的成品'}：{r.pass}/{r.total} {passed ? '✅ 全過' : ''}
+          {r.tampered ? '（助手動過腳本，已換回原本的）' : ''}
+        </p>
+      )}
+      {r && !!r.failing.length && <p className="text-[10px] text-rose-200 whitespace-pre-wrap">沒過：{r.failing.join('\n')}</p>}
+      {r && (
+        <details>
+          <summary className="text-[10px] text-slate-500 cursor-pointer">驗收輸出</summary>
+          <pre className="text-[9px] text-slate-400 whitespace-pre-wrap max-h-40 overflow-auto">{r.output}</pre>
+        </details>
+      )}
+      <p className="text-[9px] text-slate-500">🤖＝程式自動檢查　👀＝你自己看</p>
+    </div>
+  );
 }
 interface Checkpoint {
   id: string;
   at: number;
-  kind: 'plan' | 'stage';
+  kind: 'plan' | 'stage' | 'accept';
   stage?: number;
   report: string;
   ask?: string;
   status: 'waiting' | 'approved' | 'changes';
   reply?: string;
   stuck?: boolean;
+  auto?: boolean;
 }
 interface Playtest {
   at: number;
@@ -227,7 +292,9 @@ export const CommissionPanel: React.FC = () => {
 
               {c.waiting && (
                 <div className="rounded bg-amber-950/40 border border-amber-800/60 p-1.5 space-y-1">
-                  <p className="text-[11px] text-amber-200">⏳ {c.waiting.kind === 'plan' ? '計畫等你同意' : `第 ${(c.waiting.stage ?? 0) + 1} 階段的成果`}（{time(c.waiting.at)}）</p>
+                  <p className="text-[11px] text-amber-200">
+                    ⏳ {c.waiting.kind === 'plan' ? '計畫等你同意' : c.waiting.kind === 'accept' ? `第 ${(c.waiting.stage ?? 0) + 1} 階段：怎樣算做完（驗收清單）` : `第 ${(c.waiting.stage ?? 0) + 1} 階段的成果${c.waiting.auto ? '（驗收全過，程式自動交的）' : ''}`}（{time(c.waiting.at)}）
+                  </p>
                   <p className="text-[10px] text-slate-200 whitespace-pre-wrap max-h-40 overflow-auto">{c.waiting.report}</p>
                   {c.waiting.ask && <p className="text-[10px] text-amber-100">她想問：{c.waiting.ask}</p>}
                   {c.waiting.stuck && (
@@ -248,11 +315,16 @@ export const CommissionPanel: React.FC = () => {
                         // 最後一個階段的同意＝整個委託結案（11/9：之前不小心按到就結案了）
                         const last = c.waiting?.kind === 'stage' && !c.waiting.stuck && (c.waiting.stage ?? c.stage) >= c.stages.length - 1;
                         if (last && !window.confirm('這是最後一個階段，同意之後整個委託就結案了。確定？')) return;
-                        call(`/api/commissions/${c.id}/checkpoint`, 'POST', { decision: 'approve', note }, c.waiting?.stuck ? '她會繼續做這個階段' : last ? '委託結案了' : '同意了，她會繼續做').then(() => setNote(''));
+                        call(
+                          `/api/commissions/${c.id}/checkpoint`,
+                          'POST',
+                          { decision: 'approve', note },
+                          c.waiting?.kind === 'accept' ? '同意了，工坊會自己寫驗收腳本、做到全部通過' : c.waiting?.stuck ? '她會繼續做這個階段' : last ? '委託結案了' : '同意了，她會繼續做'
+                        ).then(() => setNote(''));
                       }}
                       className="px-2 py-0.5 rounded bg-emerald-700/80 hover:bg-emerald-600"
                     >
-                      {c.waiting.stuck ? '讓她繼續做' : '同意'}
+                      {c.waiting.stuck ? '讓她繼續做' : c.waiting.kind === 'accept' ? '同意這份清單' : '同意'}
                     </button>
                     {c.waiting.stuck && (
                       <button
@@ -282,9 +354,12 @@ export const CommissionPanel: React.FC = () => {
               {!!c.stages.length && (
                 <div className="space-y-0.5">
                   {c.stages.map((s, i) => (
-                    <p key={i} className={`text-[10px] ${i === c.stage && c.status === 'active' ? 'text-purple-200' : 'text-slate-400'}`}>
-                      {STAGE_MARK[s.status]} {i + 1}. {s.title}：{s.goal}
-                    </p>
+                    <div key={i} className="space-y-0.5">
+                      <p className={`text-[10px] ${i === c.stage && c.status === 'active' ? 'text-purple-200' : 'text-slate-400'}`}>
+                        {STAGE_MARK[s.status]} {i + 1}. {s.title}：{s.goal}
+                      </p>
+                      {s.acceptance && (i === c.stage || s.status === 'done') && <AcceptanceView a={s.acceptance} />}
+                    </div>
                   ))}
                 </div>
               )}
