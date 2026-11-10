@@ -15,6 +15,7 @@ interface TaskRow {
 }
 interface UsageSummary {
   budgetTwd: number;
+  budgetSource?: 'panel' | 'env' | 'default';
   todayTwd: number;
   monthTwd: number;
   overBudget: boolean;
@@ -56,6 +57,27 @@ const TASK_LABEL: Record<string, string> = {
 export const UsagePanel: React.FC = () => {
   const [data, setData] = useState<UsageSummary | null>(null);
   const [error, setError] = useState(false);
+  const [budgetInput, setBudgetInput] = useState('');
+  const [budgetMsg, setBudgetMsg] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const saveBudget = async (value: number | null) => {
+    setBudgetMsg('');
+    try {
+      const r = await fetch('/api/usage/budget', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Gemini-Pet': '1' },
+        body: JSON.stringify({ budgetTwd: value }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) return setBudgetMsg(j.reason || '沒存成功');
+      setBudgetMsg(value === null ? `回到預設：每天 NT$${j.budgetTwd}` : `已存：之後每天 NT$${j.budgetTwd}`);
+      setBudgetInput('');
+      setReloadKey((k) => k + 1);
+    } catch {
+      setBudgetMsg('沒存成功（後端沒開？）');
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -70,7 +92,7 @@ export const UsagePanel: React.FC = () => {
       alive = false;
       window.clearInterval(t);
     };
-  }, []);
+  }, [reloadKey]);
 
   if (!data) {
     return <p className="text-[10px] text-slate-500 px-1">{error ? '讀不到用量（後端沒開？）' : '讀取用量中…'}</p>;
@@ -120,7 +142,39 @@ export const UsagePanel: React.FC = () => {
           {m.warnings.length > 0 && <p className="text-[10px] text-amber-300">⚠️ {m.warnings.join('、')}</p>}
         </div>
       ))}
-      <p className="text-[10px] text-slate-500">預算在 .env 設 DAILY_BUDGET_TWD；費用依公開價目表估算，實際以 Google 帳單為準。</p>
+      <div className="pt-1 border-t border-slate-800 space-y-1">
+        <div className="flex items-center gap-1.5 text-[11px]">
+          <span className="text-slate-300 shrink-0">每日預算 NT$</span>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={budgetInput}
+            placeholder={String(data.budgetTwd)}
+            onChange={(e) => setBudgetInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && budgetInput.trim()) void saveBudget(Number(budgetInput));
+            }}
+            className="w-20 px-1.5 py-0.5 rounded bg-slate-800 border border-slate-600 text-slate-100 text-[11px]"
+          />
+          <button
+            disabled={!budgetInput.trim()}
+            onClick={() => void saveBudget(Number(budgetInput))}
+            className="px-2 py-0.5 rounded bg-purple-600/70 hover:bg-purple-500 disabled:opacity-40 text-[11px]"
+          >
+            儲存
+          </button>
+          {data.budgetSource === 'panel' && (
+            <button onClick={() => void saveBudget(null)} className="px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-[10px] text-slate-300">
+              回到預設
+            </button>
+          )}
+        </div>
+        {budgetMsg && <p className="text-[10px] text-purple-200">{budgetMsg}</p>}
+        <p className="text-[10px] text-slate-500">
+          這裡填的金額每天都會自動套用（現在：{data.budgetSource === 'panel' ? '面板設定' : data.budgetSource === 'env' ? '.env 的 DAILY_BUDGET_TWD' : '預設值'}）。超過後背景任務會休息，聊天不受影響；委託另有自己的額度。費用依公開價目表估算，實際以 Google 帳單為準。
+        </p>
+      </div>
     </div>
   );
 };

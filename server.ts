@@ -677,6 +677,9 @@ const DEEP_CHAT_RE =
  * 日常拌嘴走 gemini-3-flash-preview（配 LOW 輕量思考，3~4 秒回應且先打草稿防語用錯誤）；
  * 遇到長文（>=60 字）、附圖／搜尋、或要求分析／看畫面細節時，自動升檔 Pro。
  */
+/** 11/10：要動手做事（委託、工坊、檔案、修改…）或 10 分鐘內剛用過工具 → 也升檔 Pro（Flash 比較容易選錯工具、接錯東西） */
+const TASK_RE = /委託|工坊|工作桌|檔案|資料夾|專案|程式|改一下|修改|接著|繼續做|幫我做|做一個|做個|研究|安裝|配件|網頁|簡報|上一份|剛剛那個|進度/;
+let lastToolUseAt = 0;
 function chatModelFor(userText: string, preferredModel?: string, hasMedia = false): string {
   if (preferredModel && preferredModel !== 'auto' && preferredModel !== 'gemini-3.1-pro-preview') {
     return preferredModel;
@@ -684,6 +687,17 @@ function chatModelFor(userText: string, preferredModel?: string, hasMedia = fals
   const t = String(userText || '').trim();
   if (hasMedia || t.length >= 60 || DEEP_CHAT_RE.test(t)) {
     console.log(`[雙腦路由] 這題較深或帶圖（${t.slice(0, 18)}…），前台自動升檔 ${AUTONOMY_MODEL}`);
+    return AUTONOMY_MODEL;
+  }
+  let named = false;
+  try {
+    named = Boolean(commissions.mentioned(t)) || (workshop.snapshot().works as Work[]).slice(0, 8).some((w) => w.title && t.includes(w.title.slice(0, Math.min(4, w.title.length))));
+  } catch {
+    named = false;
+  }
+  const recentTool = Date.now() - lastToolUseAt < 10 * 60_000;
+  if (TASK_RE.test(t) || named || recentTool) {
+    console.log(`[雙腦路由] 跟做事有關（${recentTool ? '剛用過工具' : t.slice(0, 18)}…），前台自動升檔 ${AUTONOMY_MODEL}`);
     return AUTONOMY_MODEL;
   }
   return 'gemini-3-flash-preview';
@@ -1540,7 +1554,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     const tics = ticWords(petLinesOf(allMsgs), String(lastUserText));
     if (tics.length) console.log(`[口頭禪] 提醒她少用：${tics.join('、')}`);
     const pickedDynamic = Object.values(pick.blocks).filter((x) => x && x.trim()).join('\n');
-    const stateNote = innerState + repeatPrompt(repeats) + ticPrompt(tics) + takeCorrection() + studyNote();
+    const stateNote = innerState + inventoryNote() + repeatPrompt(repeats) + ticPrompt(tics) + takeCorrection() + studyNote();
     const formattedContents = normalizeChatContents(
       messages || [],
       latestScreenshot,
@@ -3445,6 +3459,7 @@ const SELECT_RE = /選|就要|我要|決定|就用|就這|第.個|^[\s0-9A-Za-z�
 const TOOL_FAIL_RE = /^(沒成功|沒申請成|讀不到|行動提案檢查沒過|工坊現在不能|實驗室現在不能|畫室現在不能|沒有這個工具|現在沒有)|檢查沒過|失敗/;
 function trackTools(run: ToolRunner, track: Array<{ name: string; ok: boolean }>): ToolRunner {
   return async (name, args) => {
+    lastToolUseAt = Date.now();
     const r = await run(name, args);
     track.push({ name, ok: !TOOL_FAIL_RE.test(String(r || '').slice(0, 80)) });
     return r;
@@ -3474,6 +3489,51 @@ function checkWorkClaims(reply: string, via: string): boolean {
   console.log(`[說了沒做]（${via}）她說「${snip}」，但「${c.title}」最近一次實際打開「${t.page}」還有問題：${issues.slice(0, 120)}`);
   pendingCorrection = { at: now, text: snip, why: `最近一次實際打開「${t.page}」檢查時還有問題（${issues.slice(0, 200)}）` };
   return true;
+}
+/** 11/10：她手上的東西是哪一類、該用哪個工具（每次回話都附上，不經過選材員） */
+const THING_KIND = { web: '網頁作品', program: '程式', study: '研究' } as const;
+function workKind(w: Work): keyof typeof THING_KIND {
+  return w.kind === 'lab' ? (w.study?.mode === 'study' ? 'study' : 'program') : 'web';
+}
+function inventoryNote(): string {
+  try {
+    const cs = commissions.open();
+    const works = (workshop.snapshot().works as Work[]).filter((w) => !w.superseded && w.status !== 'rejected' && (w.kind !== 'lab' || w.ideaBy === 'master')).slice(0, 6);
+    const lines: string[] = [];
+    if (cs.length)
+      lines.push(
+        `- 委託（回覆、要改：reply_commission；看進度：commission_status；不能用 workshop_task 接著改；檔案在委託自己的工作區，工作桌「委託」裡是複本）：${cs
+          .map((c) => `「${c.title}」${({ planning: '寫計畫中', review: '計畫等主人同意', active: `第 ${c.stage + 1}/${c.stages.length} 階段`, paused: '暫停' } as Record<string, string>)[c.status] || c.status}`)
+          .join('、')}`
+      );
+    if (works.length)
+      lines.push(`- 工坊做的（接著改：workshop_task 填 continue_from 名字）：${works.map((w) => `「${w.title}」（${THING_KIND[workKind(w)]}${w.status === 'running' ? '，做中' : w.status === 'failed' ? '，沒做成' : ''}）`).join('、')}`);
+    lines.push(`- 你自己的程式（桌寵專案）在 ${__dirname}，要改用 workshop_task 的 program；工作桌是 ${path.join(__dirname, '西雅的工作桌')}`);
+    return `\n【你手上的東西】（每次都附上，只是用來分清楚是什麼、該用哪個工具；主人沒問就不用提）\n${lines.join('\n')}`;
+  } catch {
+    return '';
+  }
+}
+/** 11/10：名字跨類別找（委託、工坊作品、研究） */
+function resolveThing(q: string): { kind: 'commission' | keyof typeof THING_KIND; title: string; id: string } | null {
+  const s = String(q || '').trim();
+  if (!s) return null;
+  const c = commissions.get(s) || commissions.mentioned(s);
+  if (c) return { kind: 'commission', title: c.title, id: c.id };
+  if (/^(last|latest|上一|剛[剛才]|最近)/i.test(s)) return null;
+  const w = workshop.findRecent(s);
+  return w ? { kind: workKind(w), title: w.title, id: w.id } : null;
+}
+function recentThingNames(): string {
+  try {
+    const names = [
+      ...commissions.open().map((c) => `「${c.title}」（委託）`),
+      ...(workshop.snapshot().works as Work[]).filter((w) => !w.superseded && w.status !== 'running' && (w.kind !== 'lab' || w.ideaBy === 'master')).slice(0, 6).map((w) => `「${w.title}」（${THING_KIND[workKind(w)]}）`),
+    ];
+    return names.length ? names.join('、') : '（目前沒有）';
+  } catch {
+    return '（查不到）';
+  }
 }
 function checkClaims(reply: string, track: Array<{ name: string; ok: boolean }>, via: string) {
   if (checkWorkClaims(reply, via)) return;
@@ -3532,7 +3592,7 @@ function chatToolRunner(ctx: { via: 'desktop' | 'line'; userText: string; recent
             console.log(`[聊天工具] workshop_task 接著改「${contQ}」→ 那是委託「${cm.title}」，改記成委託的意見`);
             return `「${cm.title}」是委託，不是工坊小作品：委託的檔案在它自己的工作區（工作桌「委託」裡那份是複本），要照階段一輪一輪在背景做，不能用 workshop_task 接著改。${note ? '你剛剛寫的說明已經記成這個委託的意見，下一輪委託工作會照著做（委託會自己在背景開工）。' : ''}要看進度用 commission_status。照實跟主人說，不要說檔案不見了。`;
           }
-          return `找不到要接著改的「${contQ}」。照實跟主人說，或問他是哪一份。`;
+          return `找不到要接著改的「${contQ}」。現在有的：${recentThingNames()}。名字對得上就用那個名字再試一次；都對不上就照實問主人是哪一份，不要說檔案不見了。`;
         }
         let kind = String(a.kind || '').trim();
         if (prev) kind = prev.kind === 'lab' ? (prev.study?.mode === 'program' || !prev.study ? 'program' : 'study') : 'web';
@@ -3589,6 +3649,11 @@ RESULT.md 的摘要要直接講：做出了什麼、怎麼用（要執行哪個�
         return `委託建立了（${c.id}），計畫寫好了，在等主人同意。\n計畫：${String(r.plan || '').slice(0, 900)}\n階段：\n${stages}\n每天最多花 NT$${c.dailyBudgetTwd}。\n用你自己的話簡短告訴主人重點（兩三句、講階段就好，不要整段照貼），問他同不同意；完整計畫在設定面板「探索 → 主人的委託」。`;
       }
       case 'reply_commission': {
+        if (a.id && !commissions.get(String(a.id))) {
+          const r = resolveThing(String(a.id));
+          if (r && r.kind !== 'commission')
+            return `「${r.title}」是工坊做的${THING_KIND[r.kind]}，不是委託，沒有記成委託的意見。要接著改它，用 workshop_task 並填 continue_from「${r.title}」。`;
+        }
         const c = commissions.get(String(a.id || '')) || commissions.mentioned(ut) || commissions.recentWaiting() || commissions.open()[0];
         if (!c) return '現在沒有進行中的委託。';
         let d = String(a.decision || 'note');
@@ -3625,6 +3690,13 @@ RESULT.md 的摘要要直接講：做出了什麼、怎麼用（要執行哪個�
         return `${warn}${{ pause: '委託暫停了。', resume: '委託繼續。', drop: '委託取消了（工作區和工具會留著）。', note: '意見記下了，下一輪工作會看到。' }[d] || ''}`;
       }
       case 'commission_status': {
+        if (a.id && !commissions.get(String(a.id))) {
+          const r = resolveThing(String(a.id));
+          if (r && r.kind !== 'commission') {
+            const w = workshop.get(r.id);
+            return `「${r.title}」是工坊做的${THING_KIND[r.kind]}，不是委託：${w ? `${w.status === 'running' ? '還在做' : w.status === 'failed' ? `沒做成（${String(w.error || '').slice(0, 120)}）` : '做好了'}` : ''}。要接著改它，用 workshop_task 並填 continue_from「${r.title}」。`;
+          }
+        }
         const c = commissions.get(String(a.id || '')) || commissions.mentioned(ut) || commissions.recentWaiting() || commissions.open()[0];
         if (!c) return '現在沒有委託。';
         const k = commissions.waiting(c);
@@ -5048,7 +5120,14 @@ app.get(/^\/api\/workshop\/(w-[\d-]+)\/files\/(.*)$/, (req: Request, res: Respon
 });
 
 app.get('/api/usage', (_req: Request, res: Response) => {
-  res.json({ ...usage.summary(), promptMeter: promptMeter.snapshot() });
+  res.json({ ...usage.summary(), budgetSource: usage.budgetSource(), promptMeter: promptMeter.snapshot() });
+});
+// 11/10：設定面板改每日預算（每天自動套用；budgetTwd 給 null 回到 .env／預設）
+app.post('/api/usage/budget', (req: Request, res: Response) => {
+  if (!req.get('X-Gemini-Pet')) return res.status(403).json({ ok: false, reason: '缺少 X-Gemini-Pet 標頭' });
+  const raw = req.body?.budgetTwd;
+  const r = usage.setBudget(raw === null || raw === '' || raw === undefined ? null : Number(raw));
+  res.status(r.ok ? 200 : 400).json(r);
 });
 
 // 她的日記、夢、紀念日
@@ -6573,6 +6652,7 @@ async function replyOnLine(cfg: LineConfig, batch: LineBatch) {
     Date.now(),
     repeatIgnore()
   );
+  lineExtra.這次的狀態 = (lineExtra.這次的狀態 || '') + inventoryNote();
   const lineTics = ticWords(petLinesOf(merged), userText);
   if (lineTics.length) {
     console.log(`[口頭禪] (LINE) 提醒她少用：${lineTics.join('、')}`);

@@ -106,10 +106,33 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
   };
 
   const rate = () => Number(process.env.USAGE_TWD_RATE) || 32;
-  const budgetTwd = () => {
+  // 11/10：主人在設定面板填的每日預算（存在 data/memories/usage-settings.json，每天自動套用）；沒填才看 .env 的 DAILY_BUDGET_TWD，再沒有就 60
+  const settingsFile = path.join(dataDir, 'memories', 'usage-settings.json');
+  let savedBudget: number | null = null;
+  try {
+    const s = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    if (Number.isFinite(Number(s?.budgetTwd)) && Number(s.budgetTwd) > 0) savedBudget = Number(s.budgetTwd);
+  } catch {
+    savedBudget = null;
+  }
+  const envBudget = () => {
     const v = Number(process.env.DAILY_BUDGET_TWD);
     return Number.isFinite(v) && v > 0 ? v : 60;
   };
+  const budgetTwd = () => savedBudget ?? envBudget();
+  /** 設定每日預算（null＝清掉，回到 .env 或預設） */
+  function setBudget(v: number | null): { ok: boolean; budgetTwd: number; reason?: string } {
+    if (v !== null && !(Number.isFinite(v) && v >= 1 && v <= 100000)) return { ok: false, budgetTwd: budgetTwd(), reason: '要填 1～100000 之間的數字' };
+    savedBudget = v === null ? null : Math.round(v * 10) / 10;
+    try {
+      fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+      fs.writeFileSync(settingsFile, JSON.stringify({ budgetTwd: savedBudget }, null, 2));
+    } catch (err: any) {
+      log(`[用量] 預算存檔失敗：${err?.message}`);
+    }
+    log(`[用量] 每日預算改成 NT$${budgetTwd()}${savedBudget === null ? '（回到預設）' : ''}`);
+    return { ok: true, budgetTwd: budgetTwd() };
+  }
 
   function day(ms = Date.now()): DayStat {
     const k = dayKey(ms);
@@ -253,7 +276,7 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
     return `【今天的額度】主人每天給你一筆 Gemini 額度（你思考、說話、做東西都會用到）。今天${state}。這是你自己的處境，不用一直提；主人問起、或要解釋為什麼今天不去工坊時再自然說一句。不要跟主人討額度，也不要怪主人。`;
   }
 
-  return { record, recordTtft, backgroundAllowed, overBudget, todayCostTwd, dailyCostTwd, taskCostTwd, summary, budgetStatus, describeForChat };
+  return { record, recordTtft, backgroundAllowed, overBudget, setBudget, budgetSource: () => (savedBudget !== null ? 'panel' : process.env.DAILY_BUDGET_TWD ? 'env' : 'default'), todayCostTwd, dailyCostTwd, taskCostTwd, summary, budgetStatus, describeForChat };
 }
 
 export type Usage = ReturnType<typeof createUsage>;
