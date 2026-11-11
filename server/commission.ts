@@ -308,8 +308,8 @@ ${manual.length ? `（下面這些由主人自己看，不用寫進腳本：${ma
 4. 在工作區根目錄寫 ACCEPT.json：{"run": "node accept/accept.mjs", "reference": true}（run＝在工作區根目錄執行的指令）。
 5. 網頁用 jsdom 測（已經裝在上層資料夾，require('jsdom') 或 import 就有；jsdom 沒有的瀏覽器功能如 AudioContext 要自己準備假的）。網頁裡的 window.seia 用假的物件：記錄 say、notify、remind、reminders、cancelReminder 的呼叫並回傳 { ok: true }（remind 回傳 { ok: true, id }），也要測「沒有 window.seia 時不會壞」。Python 或 Node 工具就直接執行它、檢查輸出檔或報告。需要連網的項目要分得出「網站暫時抓不到」和「程式錯」。
 6. 盡量在 accept/reference/ 放一份最小的參考答案（剛好能通過的簡單版本），用 ACCEPT_TARGET=accept/reference 跑要全部通過，證明腳本寫得對、做得到。專案太大做不出參考答案時，ACCEPT.json 寫 "reference": false，並在 STEP_RESULT.md 說明為什麼。
-7. 寫完自己跑兩次：對參考答案（要全過）、對現在的工作區（還沒做完，沒過是正常的）。
-8. 除了 accept/、ACCEPT.json、HANDOFF.md、STEP_RESULT.md，不要改專案的其他檔案。
+7. 寫完自己跑兩次：對參考答案（要全過）、對現在的工作區（照實記下結果就好：可能已經有一部分做好了，也可能還沒）。
+8. 只能新增或修改 accept/、ACCEPT.json、HANDOFF.md、STEP_RESULT.md。專案裡現有的成品和其他檔案（例如 index.html、舊的測試檔）一律不要刪、不要改、不要搬——就算看起來舊或亂也一樣；程式只會收回上面這幾個，其他的改了也會被換回原本的。
 9. 誠實：測試要真的檢查標準，不要寫成永遠會過。
 
 ${accessNote()}
@@ -371,12 +371,19 @@ if [ -z "$ACC_RUN" ]; then echo "===SEIA:ACC_NORUN 1"; else
 fi`;
   const post =
     kind === 'accept'
-      ? `cd "$J"
+      ? `# 對「開工前的成品＋新寫的驗收腳本」跑（助手在工作中刪改的東西不算，程式也不會收回）
+B="$L/${jobId}.base"
+rm -rf "$B"; mkdir -p "$B"
+cp -a "$O/." "$B/"
+rm -rf "$B/accept" "$B/ACCEPT.json"
+[ -d "$J/accept" ] && cp -a "$J/accept" "$B/"
+[ -f "$J/ACCEPT.json" ] && cp "$J/ACCEPT.json" "$B/"
+cd "$B"
 REFFLAG=$(node -e 'try{const j=JSON.parse(require("fs").readFileSync("ACCEPT.json","utf8"));process.stdout.write(j.reference===false?"0":"1")}catch(e){process.stdout.write("1")}' 2>/dev/null)
 echo "===SEIA:ACC_REFFLAG $REFFLAG"
 ${accRun('.', '$L/' + jobId + '.acc-now.txt')}
 [ -n "$ACC_RUN" ] && echo "===SEIA:ACC_CMD $(printf '%s' "$ACC_RUN" | base64 -w0)" && echo "===SEIA:ACC_NOW $ACC_CODE $(tail -c 5000 "$L/${jobId}.acc-now.txt" | base64 -w0)"
-if [ -n "$ACC_RUN" ] && [ -d "$J/accept/reference" ]; then
+if [ -n "$ACC_RUN" ] && [ -d "$B/accept/reference" ]; then
 ${accRun('accept/reference', '$L/' + jobId + '.acc-ref.txt')}
   echo "===SEIA:ACC_REF $ACC_CODE $(tail -c 5000 "$L/${jobId}.acc-ref.txt" | base64 -w0)"
 fi`
@@ -430,6 +437,7 @@ if [ "$KEYMODE" = proxy ]; then
     printf 'GEMINI_API_KEY=%s\n' '${KEY_PLACEHOLDER}' >> "$HOME/.dsh/.env"
   fi
 fi
+${kind === 'accept' ? 'O="$L/' + jobId + '.orig"; rm -rf "$O"; mkdir -p "$O"; cp -a "$J/." "$O/"' : ''}
 cd "$J"
 OUT=$(DSH_PERMISSION_MODE=${permMode()} timeout ${timeoutSec} dsh --profile headless --patch "$W/seia.patch.yml" "$(cat "$L/${jobId}.task.txt")" 2>"$L/${jobId}.err.txt" </dev/null)
 CODE=$?
@@ -598,6 +606,8 @@ export function createCommissions(dataDir: string, deps: CommissionDeps) {
       });
     if (!c.stages.length) c.stages = [{ title: '第一版', goal: c.direction.slice(0, 300), status: 'todo' }];
     c.stage = Math.min(c.stage, c.stages.length - 1);
+    // 11/11：進行中的委託改了階段名稱，目前階段還是「進行中」（之前會被設回還沒開始）
+    if ((c.status === 'active' || c.status === 'review') && c.stages[c.stage]?.status === 'todo' && c.checkpoints.some((k) => k.kind === 'plan' && k.status === 'approved')) c.stages[c.stage].status = 'doing';
     if (opts.projectId) c.projectId = opts.projectId;
     if (opts.budget && Number.isFinite(opts.budget) && c.status === 'planning') c.dailyBudgetTwd = Math.max(5, Math.min(100, Math.round(opts.budget)));
     writePlanFile(c);
@@ -814,10 +824,22 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}${
     if (total > wsMaxBytes()) throw new Error(`工作區太大（${Math.round(total / 1024 / 1024)}MB）`);
     return packTarGz(entries).toString('base64');
   }
-  function storeWorkspace(c: Commission, tar: Buffer | null): string {
+  /** 寫驗收腳本那件只能動的檔案（11/11：助手刪掉了鬧鐘的成品，所以改成程式強制，不靠提示詞） */
+  const acceptJobMayWrite = (rel: string) => rel === 'ACCEPT.json' || rel === 'HANDOFF.md' || rel === 'STEP_RESULT.md' || /^accept\//.test(rel);
+  function storeWorkspace(c: Commission, tar: Buffer | null, opts: { onlyAccept?: boolean } = {}): string {
     if (!tar) return '工坊沒有把工作區送回來，保留上一版';
     try {
-      const entries = unpackTarGz(tar, { maxFiles: 3000, maxBytes: wsMaxBytes() }).filter((e) => !WS_SKIP(e.path));
+      let entries = unpackTarGz(tar, { maxFiles: 3000, maxBytes: wsMaxBytes() }).filter((e) => !WS_SKIP(e.path));
+      if (opts.onlyAccept) {
+        // 只收回驗收腳本那幾個；其他檔案一律用開工前的版本（助手刪了、改了都不算）
+        const before = readDirEntries(wsDir(c.id), WS_SKIP);
+        const back = new Map(entries.map((e) => [e.path, e.data]));
+        const touched = before.filter((e) => !acceptJobMayWrite(e.path) && (!back.has(e.path) || !back.get(e.path)!.equals(e.data))).map((e) => e.path);
+        const added = entries.filter((e) => !acceptJobMayWrite(e.path) && !before.some((b) => b.path === e.path)).map((e) => e.path);
+        if (touched.length || added.length)
+          log(`[委託] 「${c.title}」寫驗收腳本時助手動了其他檔案，程式已保留原本的：${[...touched.map((x) => `改／刪 ${x}`), ...added.map((x) => `多了 ${x}`)].slice(0, 8).join('、')}`);
+        entries = [...before.filter((e) => !acceptJobMayWrite(e.path)), ...entries.filter((e) => acceptJobMayWrite(e.path))];
+      }
       replaceDir(wsDir(c.id), entries);
       try {
         deps.onStore?.(c, wsDir(c.id));
@@ -926,6 +948,7 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}${
     const st = c.stages[c.stage];
     if (!st) return { ok: false, reason: '現在沒有階段' };
     if (runningJob(c)) return { ok: false, reason: '工坊正在做這個委託，做完再改驗收' };
+    if (waiting(c)?.kind === 'plan') return { ok: false, reason: '改過的計畫還在等主人看；主人同意計畫之後，下一輪再寫驗收清單（不然會把計畫的檢查點蓋掉）' };
     const clean = items
       .map((it) => ({ text: String(it?.text || '').trim().slice(0, 200), auto: it?.auto !== false }))
       .filter((it) => it.text)
@@ -1011,7 +1034,7 @@ ${replies ? `\n## 主人對檢查點的回覆\n${replies}\n` : ''}${
         job.usage = out.usage || undefined;
         if (out.keyMode === 'passthrough') log('[委託] ⚠️ 這次轉接站沒拿到金鑰');
         if (am.jsdomFail) log('[委託] ⚠️ 工坊裝不起 jsdom（驗收網頁會失敗）');
-        const warn = storeWorkspace(c, parseTar(stdout));
+        const warn = storeWorkspace(c, parseTar(stdout), { onlyAccept: kind === 'accept' });
         if (!out.ended) throw new Error(`工坊沒有正常結束（${String(r?.stderr || out.err || '').slice(-300) || `exit ${r?.code}`}）`);
         job.result = readWs(c, 'STEP_RESULT.md', 3000);
         if (kind === 'accept') {
