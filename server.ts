@@ -54,6 +54,7 @@ import { createDiary, dayKey as diaryDayKey } from './server/diary';
 import { createWardrobe, type WardrobeItem } from './server/wardrobe';
 import { createAutonomy, type Plan } from './server/autonomy';
 import { createResearch, researchDayKey, PAGE_MAX, type Project } from './server/research';
+import { startGpuYield } from './server/gpuYield';
 import dns from 'dns';
 import net from 'net';
 import { isRainingNow, quirkPrompt } from './server/quirks';
@@ -1933,6 +1934,16 @@ function ensureVoiceLoaded(): Promise<void> {
   }
   return voiceLoadPromise;
 }
+
+// 玩 PoE 等吃顯卡的遊戲時，GPT-SoVITS 改用 CPU 跑，讓出專屬 GPU 記憶體（見 server/gpuYield.ts）
+startGpuYield({
+  baseUrl: SOVITS.baseUrl,
+  petDir: __dirname,
+  onRestarted: () => {
+    voiceLoadPromise = null; // 重開後要重新掛聲帶
+    ensureVoiceLoaded().catch((err) => console.warn('[TTS] 重新掛聲帶失敗：', err?.message));
+  },
+});
 
 app.post('/api/tts', async (req, res) => {
   try {
