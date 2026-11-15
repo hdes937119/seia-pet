@@ -28,9 +28,9 @@ export interface ActionStep {
   id?: string;
   url?: string;
   filename?: string;
-  /** open：下載資料夾裡的檔名或公開網址 */
+  /** open：下載資料夾裡的檔名或公開網址；有 folder 的話是那個資料夾裡的相對路徑（11/15） */
   target?: string;
-  /** write_file：資料夾名字、相對路徑、內容 */
+  /** write_file：資料夾名字、相對路徑、內容；open 也可以填 folder（主人借的可新增檔案的資料夾、工作桌） */
   folder?: string;
   path?: string;
   content?: string;
@@ -81,6 +81,8 @@ const MAX_STEPS = 12;
 const downloadMaxMb = () => Number(process.env.DOWNLOAD_MAX_MB) || 500;
 export const downloadDir = () => path.join(os.homedir(), 'Downloads', downloadSub());
 const RUNNABLE_RE = /\.(exe|msi|msix|appx|bat|cmd|ps1|vbs|js|jar|lnk|scr|com)$/i;
+/** 11/15：借來的資料夾裡只能打開這些（網頁、文字、圖片、聲音、影片、PDF）；安裝檔、腳本不行 */
+const OPENABLE_RE = /\.(html?|txt|md|json|csv|log|png|jpe?g|gif|webp|svg|bmp|mp3|wav|ogg|m4a|flac|mp4|webm|pdf)$/i;
 const WINGET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]{1,80}$/;
 const pad = (n: number) => String(n).padStart(2, '0');
 const stamp = (ms = Date.now()) => {
@@ -129,7 +131,13 @@ export function normalizeSteps(raw: any[]): { steps: ActionStep[]; problems: str
     } else if (t === 'open') {
       const target = String(x?.target || '').trim();
       if (!target) problems.push(`第 ${i + 1} 步：open 沒有寫要打開什麼`);
-      steps.push({ type: 'open', target: /^https?:\/\//i.test(target) ? target : safeFileName(target), note });
+      const folder = String(x?.folder || '').trim();
+      if (folder && !/^https?:\/\//i.test(target)) {
+        // 11/15：打開主人借的資料夾（或工作桌）裡的檔案
+        const rel = safeRelPath(target);
+        if (target && !rel) problems.push(`第 ${i + 1} 步：open 的檔案路徑不對（要是資料夾裡的相對路徑）`);
+        steps.push({ type: 'open', folder, target: rel, note });
+      } else steps.push({ type: 'open', target: /^https?:\/\//i.test(target) ? target : safeFileName(target), note });
     } else if (t === 'write_file') {
       const rel = safeRelPath(x?.path || '');
       const content = String(x?.content ?? '');
@@ -217,6 +225,8 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
   async function check(p: ActionPlan) {
     const problems = [...(p.problems || [])];
     const willDownload = new Set<string>();
+    /** 前面的 write_file 會寫出來的檔案（「資料夾|相對路徑」），後面的 open 可以打開 */
+    const willWrite = new Set<string>();
     for (const [i, s] of p.steps.entries()) {
       const n = `第 ${i + 1} 步`;
       if (s.type === 'winget') {
@@ -239,6 +249,18 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
         }
         if (RUNNABLE_RE.test(String(s.filename))) s.warn = '這是可以執行的檔案（安裝檔、腳本）';
         willDownload.add(String(s.filename));
+      } else if (s.type === 'open' && s.folder) {
+        const t = String(s.target);
+        const f = deps.addFolder(String(s.folder));
+        if (!f) {
+          const names = deps.addFolderNames?.() || [];
+          problems.push(`${n}：open 的 folder「${s.folder}」不是主人借你、可以新增檔案的資料夾${names.length ? `；現在可以用：${names.map((x) => `「${x}」`).join('、')}` : ''}`);
+        } else {
+          const p = path.join(f.path, ...t.split('/'));
+          if (!OPENABLE_RE.test(t)) problems.push(`${n}：借來的資料夾裡只能打開網頁、文字、圖片、聲音、影片、PDF 這類檔案，不能打開「${t}」`);
+          else if (!fs.existsSync(p) && !willWrite.has(`${f.path}|${t}`)) problems.push(`${n}：「${f.label}」裡沒有「${t}」，前面的步驟也不會寫出它`);
+          s.check = `打開 ${f.label}\\${t.replace(/\//g, '\\')}（${p}）`;
+        }
       } else if (s.type === 'open') {
         const t = String(s.target);
         if (/^https?:\/\//i.test(t)) {
@@ -261,7 +283,8 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
         else {
           const dest = path.join(f.path, ...String(s.path).split('/'));
           if (fs.existsSync(dest)) problems.push(`${n}：「${s.path}」已經存在，不會覆蓋`);
-          s.check = `新增 ${f.label}\\${String(s.path).replace(/\//g, '\\')}（${Buffer.byteLength(String(s.content || ''))} bytes）`;
+          s.check = `新增 ${f.label}\\${String(s.path).replace(/\//g, '\\')}（${Buffer.byteLength(String(s.content || ''))} bytes，完整路徑：${dest}）`;
+          willWrite.add(`${f.path}|${s.path}`);
           if (RUNNABLE_RE.test(String(s.path))) s.warn = '這是可以執行的檔案';
         }
       }
@@ -354,6 +377,17 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
       }
       return { ok: false, output: '轉址太多次' };
     }
+    if (s.type === 'open' && s.folder) {
+      const t = String(s.target);
+      if (process.platform !== 'win32') return { ok: false, output: '只能在 Windows 上打開' };
+      const f = deps.addFolder(String(s.folder));
+      if (!f) return { ok: false, output: `資料夾「${s.folder}」沒有給、過期了，或是唯讀` };
+      if (!OPENABLE_RE.test(t)) return { ok: false, output: `借來的資料夾裡不能打開「${t}」這種檔案` };
+      const p = path.join(f.path, ...t.split('/'));
+      if (!p.startsWith(f.path.replace(/[\\/]+$/, '') + path.sep) || !fs.existsSync(p)) return { ok: false, output: `找不到 ${f.label}\\${t}` };
+      spawn('explorer.exe', [p], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      return { ok: true, output: `打開了 ${f.label}\\${t.replace(/\//g, '\\')}（完整路徑：${p}）` };
+    }
     if (s.type === 'open') {
       const t = String(s.target);
       if (process.platform !== 'win32') return { ok: false, output: '只能在 Windows 上打開' };
@@ -378,7 +412,7 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
       } catch (err: any) {
         return { ok: false, output: err?.code === 'EEXIST' ? '檔案已經存在，沒有覆蓋' : `寫不進去：${err?.message}` };
       }
-      return { ok: true, output: `新增了 ${f.label}\\${String(s.path).replace(/\//g, '\\')}` };
+      return { ok: true, output: `新增了 ${f.label}\\${String(s.path).replace(/\//g, '\\')}（完整路徑：${dest}）` };
     }
     return { ok: false, output: '不支援的步驟' };
   }
@@ -486,8 +520,17 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
 
   function describeForChat(now = Date.now()): string {
     const recent = plans.filter((p) => p.status !== 'superseded' && now - p.createdAt < 3 * 86_400_000).slice(-3);
-    if (!recent.length) return '';
-    return `【你的行動提案】${recent.map((p) => `「${p.title}」${STATUS[p.status]}`).join('；')}。主人要在電腦前的設定面板按同意才會執行；聊天時照實說狀態，不要說還沒執行的已經做好了。`;
+    // 11/15：做完的附上結果（有完整路徑），主人問「檔案在哪」才答得出來
+    const lines = recent.map((p) => {
+      const res = ['done', 'failed'].includes(p.status) ? (p.results || []).map((r) => r.output).filter(Boolean).join('；').slice(0, 300) : '';
+      return `「${p.title}」${STATUS[p.status]}${res ? `（結果：${res}）` : ''}`;
+    });
+    const folders = (deps.addFolderNames?.() || [])
+      .map((name) => deps.addFolder(name))
+      .filter(Boolean)
+      .map((f) => `${f!.label}＝${f!.path}`);
+    if (!recent.length) return folders.length ? `可以新增檔案的資料夾在主人電腦上的位置：${folders.join('；')}（主人問檔案在哪，就照這個講完整路徑）` : '';
+    return `【你的行動提案】${lines.join('；')}。主人要在電腦前的設定面板按同意才會執行；聊天時照實說狀態，不要說還沒執行的已經做好了。${folders.length ? `\n可以新增檔案的資料夾在主人電腦上的位置：${folders.join('；')}（主人問檔案在哪，就照這個講完整路徑）` : ''}`;
   }
 
   function snapshot() {

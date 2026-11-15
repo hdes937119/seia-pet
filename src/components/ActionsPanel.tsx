@@ -114,7 +114,7 @@ export const ActionsPanel: React.FC = () => {
   const stepLine = (s: Step) => {
     if (s.type === 'winget') return `${s.id}${s.check ? `（${s.check}）` : ''}`;
     if (s.type === 'download') return `${s.url}\n→ 下載\\${persona().downloads}\\${s.filename}`;
-    if (s.type === 'open') return s.target || '';
+    if (s.type === 'open') return s.folder ? `${s.folder}\\${s.target || ''}` : s.target || '';
     return `${s.folder}\\${s.path}`;
   };
 

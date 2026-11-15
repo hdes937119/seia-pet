@@ -2808,6 +2808,7 @@ const RESEARCH_TOOLS = [
 - {"type":"winget","id":"winget 套件 ID（例如 OBSProject.OBSStudio）"}：用 winget 安裝軟體（會先查出名稱和發行者給主人看）
 - {"type":"download","url":"公開網址","filename":"存成的檔名"}：下載到主人電腦的「下載\\西雅」資料夾（不覆蓋）
 - {"type":"open","target":"下載\\西雅 裡的檔名，或公開網址"}：打開檔案或網頁（打開安裝檔＝執行它，主人要在畫面上按下一步）
+- {"type":"open","folder":"主人借的可以新增檔案的資料夾名字（或工作桌）","target":"資料夾裡的相對路徑"}：打開那裡的網頁、文字、圖片、聲音、影片、PDF（不能打開安裝檔、腳本）；可以接在同一份提案的 write_file 後面，寫好就幫主人打開
 - {"type":"write_file","folder":"主人借的、可以新增檔案的資料夾名字","path":"相對路徑","content":"文字內容"}：新增一個檔案（不覆蓋、最多 200KB）
 每一步可以加 "note" 說明為什麼。最多 12 步。不能用任意指令、不能要系統管理員權限、不能刪東西。`,
     parametersJsonSchema: {

@@ -353,7 +353,7 @@ export function createFolders(dataDir: string, deps: FolderDeps) {
     if (list.length)
       parts.push(
         `主人允許你用的資料夾（開工時在 folders 填名字才會掛進去；一律只能讀，標「可以新增檔案」的可以把新檔案交給主人）：${list
-          .map((g) => `「${g.label}」${g.mode === 'add' ? '可以新增檔案' : '唯讀'}${g.note ? `，${g.note}` : ''}${g.expiresAt ? `，到 ${new Date(g.expiresAt).toLocaleDateString('zh-TW')}` : ''}`)
+          .map((g) => `「${g.label}」（主人電腦上的 ${g.path}）${g.mode === 'add' ? '可以新增檔案' : '唯讀'}${g.note ? `，${g.note}` : ''}${g.expiresAt ? `，到 ${new Date(g.expiresAt).toLocaleDateString('zh-TW')}` : ''}`)
           .join('；')}`
       );
     if (open.length) parts.push(`你請求、主人還沒回覆的資料夾：${open.map((r) => r.what).join('、')}`);
