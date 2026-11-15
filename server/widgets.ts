@@ -43,6 +43,9 @@ export interface Widget {
   hash?: string;
 }
 
+/** 聊天裡她自己登記的提醒（不屬於任何配件） */
+export const CHAT_ID = 'chat';
+
 export interface Reminder {
   id: string;
   widgetId: string;
@@ -245,7 +248,8 @@ export function createWidgets(dataDir: string, deps: WidgetDeps) {
     for (const r of [...st.reminders]) {
       if (r.at > now) continue;
       const w = get(r.widgetId);
-      if (w && w.status === 'installed' && now - r.at < 6 * 3_600_000) out.push({ ...r });
+      // 11/15：聊天裡她自己登記的提醒（widgetId＝chat）不用裝配件
+      if ((r.widgetId === CHAT_ID || (w && w.status === 'installed')) && now - r.at < 6 * 3_600_000) out.push({ ...r });
       if (r.repeat === 'daily') {
         while (r.at <= now) r.at += 86_400_000;
       } else st.reminders = st.reminders.filter((x) => x !== r);
@@ -254,6 +258,34 @@ export function createWidgets(dataDir: string, deps: WidgetDeps) {
     if (dirty) save();
     return out;
   }
+
+  /**
+   * 11/15：聊天時答應主人「幾點叫你」→ 用這個真的登記（以前她會答應、但根本沒有工具，結果沒叫）。
+   * when：clock「HH:MM」（今天這個時間過了就算明天）、inMinutes、或 ISO 時間。
+   */
+  function addChatReminder(a: { text?: string; clock?: string; inMinutes?: number; at?: string; repeat?: string }, now = Date.now()): { ok: boolean; reason?: string; reminder?: Reminder } {
+    const text = String(a.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!text) return { ok: false, reason: '提醒要說什麼？（text）' };
+    let at = NaN;
+    const clock = String(a.clock || '').trim().match(/^(\d{1,2})[:：](\d{2})$/);
+    if (clock) {
+      const d = new Date(now);
+      d.setHours(Number(clock[1]), Number(clock[2]), 0, 0);
+      if (d.getTime() <= now + 30_000) d.setDate(d.getDate() + 1);
+      at = d.getTime();
+    } else if (a.inMinutes !== undefined && a.inMinutes !== null && String(a.inMinutes) !== '') at = now + Number(a.inMinutes) * 60_000;
+    else if (a.at) at = Date.parse(String(a.at));
+    if (!Number.isFinite(at)) return { ok: false, reason: '時間看不懂（clock 用 "02:40"、或 inMinutes 分鐘數）' };
+    if (at < now + 55_000) return { ok: false, reason: '提醒至少要在 1 分鐘之後' };
+    if (at > now + 30 * 86_400_000) return { ok: false, reason: '提醒最多只能設在 30 天內' };
+    if (st.reminders.filter((r) => r.widgetId === CHAT_ID).length >= 30) return { ok: false, reason: '已經登記了 30 個提醒，先取消一些' };
+    const r: Reminder = { id: `r-${stamp()}-${Math.floor(Math.random() * 1000)}`, widgetId: CHAT_ID, widgetTitle: '聊天', at, text, repeat: a.repeat === 'daily' ? 'daily' : undefined, createdAt: now };
+    st.reminders.push(r);
+    save();
+    log(`[提醒] 聊天登記：${new Date(at).toLocaleString('zh-TW', { hour12: false })}「${text}」${r.repeat ? '（每天）' : ''}`);
+    return { ok: true, reminder: r };
+  }
+  const chatReminders = () => st.reminders.filter((r) => r.widgetId === CHAT_ID).sort((x, y) => x.at - y.at);
 
   function cancelReminder(rid: string) {
     const before = st.reminders.length;
@@ -278,7 +310,7 @@ export function createWidgets(dataDir: string, deps: WidgetDeps) {
     };
   }
 
-  return { propose, decide, remove, get, installed, pageFile, bridge, due, cancelReminder, describe, snapshot };
+  return { propose, decide, remove, get, installed, pageFile, bridge, due, cancelReminder, addChatReminder, chatReminders, describe, snapshot };
 }
 
 export type Widgets = ReturnType<typeof createWidgets>;

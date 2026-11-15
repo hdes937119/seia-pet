@@ -14,16 +14,44 @@ const CONFLICT_RE =
 /* ───────── 2. 討厭下雨 ───────── */
 const RAIN_RE = /雨|颱風|梅雨|濕答答|潮濕|淋濕|雨傘/;
 const WEATHER_TTL_MS = 30 * 60 * 1000;
+let lastRainMoodAt = 0;
 let weatherCache: { at: number; raining: boolean; label: string } | null = null;
 
 /** WMO 天氣代碼：毛毛雨、雨、陣雨、雷雨 */
 const isRainCode = (c: number) => (c >= 51 && c <= 67) || (c >= 80 && c <= 82) || (c >= 95 && c <= 99);
 
+/**
+ * 11/15：天氣跟著主人在哪：.env 有設 WEATHER_LAT／WEATHER_LON 就用它；沒有就用這台電腦對外的網路大概在哪（城市級，6 小時查一次），
+ * 主人北上回宿舍、回老家都會跟著變；查不到才用台北。
+ */
+let placeCache: { at: number; lat: number; lon: number; city: string } | null = null;
+async function wherePlace(): Promise<{ lat: number; lon: number; city: string }> {
+  const envLat = Number(process.env.WEATHER_LAT);
+  const envLon = Number(process.env.WEATHER_LON);
+  if (envLat && envLon) return { lat: envLat, lon: envLon, city: '設定的地點' };
+  if (placeCache && Date.now() - placeCache.at < 6 * 3_600_000) return placeCache;
+  try {
+    const res = await fetch('https://ipwho.is/?fields=success,latitude,longitude,city', { signal: AbortSignal.timeout(5000) });
+    const d: any = await res.json();
+    if (d?.success && Number(d.latitude) && Number(d.longitude)) {
+      const changed = placeCache && placeCache.city !== d.city;
+      placeCache = { at: Date.now(), lat: Number(d.latitude), lon: Number(d.longitude), city: String(d.city || '') };
+      if (changed || !weatherCache) console.log(`[天氣] 主人現在大概在：${placeCache.city || '（不知道城市）'}`);
+      if (changed) weatherCache = null;
+      return placeCache;
+    }
+  } catch {
+    // 查不到就用上次的或台北
+  }
+  placeCache = placeCache ? { ...placeCache, at: Date.now() } : { at: Date.now(), lat: 25.03, lon: 121.56, city: '台北（預設）' };
+  return placeCache;
+}
+
 async function currentWeather(): Promise<{ raining: boolean; label: string } | null> {
+  const place = await wherePlace();
   if (weatherCache && Date.now() - weatherCache.at < WEATHER_TTL_MS) return weatherCache;
-  // 預設台北；別的地方在 .env 設 WEATHER_LAT / WEATHER_LON
-  const lat = Number(process.env.WEATHER_LAT) || 25.03;
-  const lon = Number(process.env.WEATHER_LON) || 121.56;
+  const lat = place.lat;
+  const lon = place.lon;
   try {
     const res = await fetch(
       `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=weather_code,precipitation&timezone=auto`,
@@ -79,12 +107,14 @@ export async function quirkPrompt({ userText, recentUserTexts }: QuirkInput, now
     );
   }
 
-  // 2. 討厭下雨
+  // 2. 討厭下雨（11/15：只是外面在下、主人沒提到雨 → 一小時最多發作一次，而且只提一句）
   const weather = await currentWeather();
   const talkingRain = RAIN_RE.test(text);
-  if (weather?.raining || talkingRain) {
+  const weatherTurn = Boolean(weather?.raining) && !talkingRain && now - lastRainMoodAt >= 60 * 60 * 1000;
+  if (weatherTurn) lastRainMoodAt = now;
+  if (talkingRain || weatherTurn) {
     parts.push(
-      `【你的偏執：極度討厭下雨】${weather?.raining ? `外面現在真的在${weather.label}，你今天心情很差，講話比平常暴躁、悲觀。` : ''}${
+      `【你的偏執：極度討厭下雨】${weatherTurn ? `外面現在真的在${weather!.label}，你心情有點差，這次可以順口抱怨一句（一句就好，不要整則都在講雨）。` : ''}${
         talkingRain ? '主人提到雨，你會忍不住發牢騷：' : ''
       }你覺得下雨天什麼都會變糟（毛會塌、心情會爛、出門一定倒楣），講到雨就會不講理地抱怨、強詞奪理，就算主人說雨很浪漫也要硬拗回來。不過不要因此不回答主人的問題。`
     );

@@ -107,6 +107,7 @@ import {
 } from './server/chatSearch';
 import { calendarUrls, fetchCalendarEvents, formatEventTime, localDateKey, type CalEvent } from './server/calendar';
 import { splitByLanguage, concatWavs, type TtsPart } from './server/ttsLang';
+import { replyBudget, budgetPrompt, limitReply, streamPrefix, shapePrompt, widen } from './server/replyShape';
 
 // 說話節奏：貼圖名稱（要跟前端 src/services/replyRhythm.ts 的 STICKERS 一致）
 const STICKER_NAMES = ['開心', '笑死', '得意', '生氣', '害羞', '疑惑', '哭哭', '讚', '晚安'];
@@ -115,7 +116,7 @@ const STICKER_NAMES = ['開心', '笑死', '得意', '生氣', '害羞', '疑惑
 function chattyRhythm(chatty?: number): string {
   const c = typeof chatty === 'number' ? chatty : 60;
   if (c < 30) return '你話很少：幾乎都只回 1 則、一句話，不連傳。';
-  if (c > 70) return '你很話癆：聊到有興趣的話題時常常連傳兩三則；但主人只回短話時一樣只回一句。';
+  if (c > 70) return '你很話癆：想講的事比較多，聊到有興趣的話題時會多傳一則；但每則還是短短的，主人只回短話時一樣只回一句。';
   return '大約四次裡才有一次分成兩則傳，其他時候 1 則就好。';
 }
 
@@ -254,6 +255,12 @@ function maybeFollowUp(now = Date.now()) {
   if (f.sourceSeqs?.length && recall.bySeqs(f.sourceSeqs).length === 0) {
     threads.markFollowUpSent(now);
     console.log(`[話頭] 追問「${f.text}」引用的原話編號不存在，擋掉`);
+    return;
+  }
+  // 11/15：同一件事 24 小時內問過了（不管是打招呼、報時還是聊天問的）→ 不再問
+  if (threads.askedRecently(f.text, now)) {
+    threads.markFollowUpSent(now);
+    console.log(`[話頭] 「${f.text}」最近問過了，不再問`);
     return;
   }
   if (!proactive.request('followup', now)) return;
@@ -1061,6 +1068,8 @@ const recentSaid: Array<{ at: number; text: string }> = [];
 function noteSaid(text: string) {
   const t = String(text || '').replace(/\s+/g, ' ').trim();
   if (!t) return;
+  // 11/15：她主動問的問題也記進「問過了」（打招呼、報時、螢幕吐槽、追問共用一份）
+  threads.noteSaid(t);
   recentSaid.push({ at: Date.now(), text: t.slice(0, 200) });
   if (recentSaid.length > 30) recentSaid.splice(0, recentSaid.length - 30);
 }
@@ -1091,7 +1100,7 @@ function describeMyRecentLines(hours = 6, n = 10): string {
 const chatToolsOn = () => process.env.CHAT_TOOLS !== 'false';
 const RULE10_MARKER = `10. **工坊**：只有主人「明確要你」在工坊做一個小遊戲、小工具或小動畫（例如「幫我做個打地鼠」「去工坊做一個…」）時，才在文末加隱藏標記 <!--WORK:{"title":"作品名（12 字內）","brief":"寫給工坊助手的具體說明：做成什麼樣子、怎麼玩、你想加的小細節（60～150 字）"}-->，回覆裡說你要去工坊做了。主人只是聊到、問你會不會，或是你自己想做，都不要加。工坊只能做單一網頁的小作品。畫圖（配件、表情、貼圖）目前不能從聊天直接叫你畫，但你有自己的時間時可以自己決定要不要畫；安裝軟體或插件目前都不行，主人要的是這些就照實說。背景資料寫工坊現在不能開工時，也照實說，不要加標記。`;
 const RULE12_MARKER = `12. **主人的委託**：主人明確要你做一個比較大、要花好幾天慢慢做的東西（例如「幫我做一個 PoE 通貨漲跌系統」「委託你做一個…工具」），不是單一網頁小作品時，在文末加 <!--COMMISSION:{"title":"委託名稱（12 字內）","direction":"主人要的東西，照主人的話寫清楚（目標、成品樣子、用途）","constraints":"主人說的限制（沒有就空字串）"}-->，回覆裡說你會先寫計畫給他看（不要假裝已經開始做）。主人只是聊到、問你做不做得到，不要加。背景資料有【主人的委託】時：主人對某個委託給意見、回覆你的報告，就在文末加 <!--CFEEDBACK:{"id":"委託 id","decision":"approve、changes、note、pause、resume 或 drop","note":"主人的意見，照他的意思寫清楚"}-->：approve＝主人明確同意正在等他回覆的計畫或階段成果；changes＝主人要你改；note＝其他意見；pause／resume／drop＝主人明確說暫停、繼續、不做了。不確定主人是不是同意，就用問的，不要加 approve。`;
-const RULE10_TOOLS = `10. **你的工具**：你手上有工具——交給工坊做事（workshop_task：web 網頁小作品、program 寫程式做事、study 深入研究一個專案；主人說「剛剛那個再改」就填 continue_from 接著改）、開委託（create_commission）、回覆委託（reply_commission）、查委託進度（commission_status）、在主人電腦上做事的行動提案（plan_actions）、看和跑你自己做的工具（my_tools、run_my_tool）、把做好的作品申請裝成主人桌寵上的配件（propose_widget）、看你和主人共用的工作桌（my_desk）、讀主人貼的網址或 GitHub 專案（read_link：主人貼了連結、問你某個網頁在講什麼時，一定要先讀，不要憑印象說）（只是問大概在講什麼用 read_link；要「研究／分析／看看能不能拿來用」才用 workshop_task 的 study）。**說到做到**：用工具之前只能說你要去做，不能先說結果；工具回來說成功，才能說做好了、放好了、送出了；工具失敗、或這一輪你根本沒用工具，就照實說還沒成功。你做好的作品和委託成果會自動放上主人的「西雅的工作桌」，不用搬檔案、也不要為了搬檔案送行動提案。看主人這句話需不需要，自己決定用不用、用哪個；大部分聊天都不需要工具。不確定主人是不是要你動手，就先用一句話問他。用工具要等的（開委託、跑工具），先簡短說一聲再用。用完照工具回來的結果說，不要說還沒發生的事，也不要把工具回來的整段內容照貼。畫圖目前不能從聊天直接叫你畫；要裝在主人 Windows 上的軟體要用行動提案、要主人在電腦前同意（工坊裡要用的東西，工坊助手可以自己 sudo 裝，不用提案）。**主人給你的權限（11/10）**：用 my_computer 可以直接看主人電腦上的檔案（系統資料夾、金鑰、瀏覽器密碼除外）；用 workshop_task 時工坊可以讀主人電腦、自己裝套件，也可以改你自己的程式（桌寵專案）——改之前會自動備份、記錄，主人可以一鍵回溯，後端改了桌寵會自己重開。改自己之前先想清楚、一次改一件事，改完照實跟主人說改了什麼。不要再寫 WORK、COMMISSION、CFEEDBACK 這些舊的隱藏標記。`;
+const RULE10_TOOLS = `10. **你的工具**：你手上有工具——交給工坊做事（workshop_task：web 網頁小作品、program 寫程式做事、study 深入研究一個專案；主人說「剛剛那個再改」就填 continue_from 接著改）、開委託（create_commission）、回覆委託（reply_commission）、查委託進度（commission_status）、在主人電腦上做事的行動提案（plan_actions）、看和跑你自己做的工具（my_tools、run_my_tool）、把做好的作品申請裝成主人桌寵上的配件（propose_widget）、看你和主人共用的工作桌（my_desk）、讀主人貼的網址或 GitHub 專案（read_link：主人貼了連結、問你某個網頁在講什麼時，一定要先讀，不要憑印象說）（只是問大概在講什麼用 read_link；要「研究／分析／看看能不能拿來用」才用 workshop_task 的 study）。**答應之前先確定做得到**：要在某個時間叫主人、提醒主人，一定要用 set_reminder 真的登記，登記成功才能說「會叫你」；你沒有工具能做的事（例如替主人買東西、你人不在電腦前卻說會盯著）就照實說做不到，或請主人自己來。**說到做到**：用工具之前只能說你要去做，不能先說結果；工具回來說成功，才能說做好了、放好了、送出了；工具失敗、或這一輪你根本沒用工具，就照實說還沒成功。你做好的作品和委託成果會自動放上主人的「西雅的工作桌」，不用搬檔案、也不要為了搬檔案送行動提案。看主人這句話需不需要，自己決定用不用、用哪個；大部分聊天都不需要工具。不確定主人是不是要你動手，就先用一句話問他。用工具要等的（開委託、跑工具），先簡短說一聲再用。用完照工具回來的結果說，不要說還沒發生的事，也不要把工具回來的整段內容照貼。畫圖目前不能從聊天直接叫你畫；要裝在主人 Windows 上的軟體要用行動提案、要主人在電腦前同意（工坊裡要用的東西，工坊助手可以自己 sudo 裝，不用提案）。**主人給你的權限（11/10）**：用 my_computer 可以直接看主人電腦上的檔案（系統資料夾、金鑰、瀏覽器密碼除外）；用 workshop_task 時工坊可以讀主人電腦、自己裝套件，也可以改你自己的程式（桌寵專案）——改之前會自動備份、記錄，主人可以一鍵回溯，後端改了桌寵會自己重開。改自己之前先想清楚、一次改一件事，改完照實跟主人說改了什麼。不要再寫 WORK、COMMISSION、CFEEDBACK 這些舊的隱藏標記。`;
 const RULE12_TOOLS = `12. **委託的同意**：主人要明確說同意、或已經從你列的選項裡選好，才用 reply_commission 的 approve；程式也會再核對主人的原話。主人還在挑、還在問，就繼續聊或列選項，不要急著開委託或同意。`;
 
 function buildSystemPrompt(
@@ -1201,7 +1210,8 @@ function buildSystemPrompt(
 2. **記憶要用在對的地方**：背景資料（CONTEXT 區塊）裡的長期檔案、最近話題、往事都只是背景資料。只有主人這句話跟某條記憶「直接相關」時，才自然地提一條（一次最多一條）；不相關就完全不要提，也不要為了顯示你記得而硬塞。**絕對不要把以前聊過的東西安插進主人現在說的事**（例如主人說正在吃麻辣燙，就只聊麻辣燙，不要說他也在吃以前提過的肉包；主人在玩 A 遊戲，就不要說成 B 遊戲）。主人現在說的內容永遠比任何記憶優先；同一個記憶也不要每次都拿出來講。背景資料裡的【到期該關心的後續】【可以接回來的話頭】、你最近的改變、鎮上的事、日記、夢、你自己在做的事，都是「可以提、但不一定要提」：大部分回覆一件都不用提，只有剛好接得上主人現在說的話、或聊天告一段落很自然的時候才提一件（優先順序：到期的後續 ＞ 話頭 ＞ 其他），不要用「對了」硬轉話題；主人在忙、在打遊戲或只回很短時，一件都不要提。
 3. 像 LINE 上的朋友傳訊息一樣自然對話（繁體中文），用你自己的話說。語助詞（喵、哈…）偶爾用就好，不要每句都加，也不要每次都用同樣的開頭或結尾。這是聊天訊息，不要用 Markdown（例如 **粗體**、# 標題、- 清單）。
 【說話節奏（像真人傳 LINE）】
-- 預設只傳「1 則」訊息。主人只說「哈哈」「嗯」「好」「晚安」這種短話時，只回一句很短的（15 字內），或只丟一張貼圖。
+- 預設只傳「1 則」訊息，長度照每次附上的【這次回覆的長度】（跟主人這句話的長短、話癆程度有關，超過會被程式切掉）。主人只說「哈哈」「嗯」「好」「晚安」這種短話時，只回一句很短的，或只丟一張貼圖。
+- 像真人傳 LINE：一則只講一件事，不用每次都先感嘆、再重述主人的話、再評論、再給建議、最後反問。
 - 只有真的有兩件不同的事要講時，才用 [[NEXT]] 分成兩三則（最多 3 則，每則 25 字內）。例如：等等！[[NEXT]]我想到了，你可以先打第二階段…
 - 貼圖一定要單獨一則（前後用 [[NEXT]] 隔開），寫成 [[STICKER:名稱]]，名稱只能是：${STICKER_NAMES.join('、')}，不能自己發明。
 - ${chattyRhythm(personality.chatty)}
@@ -1558,7 +1568,15 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     const tics = ticWords(petLinesOf(allMsgs), String(lastUserText));
     if (tics.length) console.log(`[口頭禪] 提醒她少用：${tics.join('、')}`);
     const pickedDynamic = Object.values(pick.blocks).filter((x) => x && x.trim()).join('\n');
-    const stateNote = innerState + inventoryNote() + repeatPrompt(repeats) + ticPrompt(tics) + takeCorrection() + studyNote();
+    // 11/15：這次回覆的長度額度（跟「話癆」滑桿連動）＋ 不要落入固定模板
+    const budget = replyBudget({
+      userText: String(lastUserText),
+      chatty: Number((personality as any)?.chatty),
+      gaming: isGamingActivity(currentActivity) || Boolean(gpuYield?.gameRunning()),
+      detail: Boolean(search) || (Array.isArray(attachments) && attachments.length > 0),
+    });
+    const stateNote =
+      innerState + inventoryNote() + repeatPrompt(repeats) + ticPrompt(tics) + takeCorrection() + studyNote() + budgetPrompt(budget) + shapePrompt(petLinesOf(allMsgs).map((l: any) => String(l?.text ?? l)));
     const formattedContents = normalizeChatContents(
       messages || [],
       latestScreenshot,
@@ -1592,6 +1610,8 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     );
 
     const filter = createKeywordFilter();
+    let visAll = '';
+    let emittedLen = 0;
     let firstTokenMs: number | null = null;
     let rawHead = '';
     let actChecked = false;
@@ -1610,7 +1630,15 @@ app.post('/api/chat', async (req: Request, res: Response) => {
           }
         }
         const visible = filter.push(text);
-        if (visible) send('delta', { text: visible });
+        if (visible) {
+          // 長度額度：超過的不送（最後的完整回覆也會用同一套規則切）
+          visAll += visible;
+          const out = streamPrefix(visAll, budget);
+          if (out.length > emittedLen && out.startsWith(visAll.slice(0, emittedLen))) {
+            send('delta', { text: out.slice(emittedLen) });
+            emittedLen = out.length;
+          }
+        }
     };
     const chatModel = chatModelFor(String(lastUserText), preferredModel, media.length > 0 || Boolean(search));
     const recentForTools = allMsgs
@@ -1633,7 +1661,12 @@ app.post('/api/chat', async (req: Request, res: Response) => {
           calls: [] as string[],
         };
 
-    const { cleanText, detectedKeywords } = extractKeywords(fullText);
+    const extracted = extractKeywords(fullText);
+    const detectedKeywords = extracted.detectedKeywords;
+    const finalBudget = toolCalls.length ? widen(budget) : budget;
+    const limited = limitReply(extracted.cleanText, finalBudget);
+    const cleanText = limited.text.trim() || extracted.cleanText;
+    if (limited.cut) console.log(`[長度] 切掉了超過的部分（${finalBudget.why}；額度 ${finalBudget.chars} 字、${finalBudget.segs} 則）`);
     {
       const hits = repeatHits(cleanText, repeats);
       if (hits.length) console.log(`[重複] 提醒過了，她還是用了：${hits.join('、')}`);
@@ -1774,6 +1807,7 @@ ${describeTime(clientTime, { skipMealHint: mealRecentlyFull() })}
 ${describeMealState()}
 ${describeRecentChat()}
 ${describeMyRecentLines()}
+${threads.askedBlock()}
 請仔細觀看這張主人目前的真實電腦螢幕畫面截圖！
 ${recentActivity ? `【上一刻的畫面是】：標題「${recentActivity}」(${recentObservation || ''})。如果現在畫面中的影片、字幕、人物、場景或視窗跟上一刻不同，請務必指出畫面換成了什麼新內容！` : ''}
 ${scenarioHint ? `【場景提示】：${scenarioHint}` : ''}
@@ -1830,7 +1864,7 @@ ${recentActivity ? '- 跟上一刻比較：如果是同一場戰鬥/同一關，
     );
 
     const parsed = JSON.parse(cleanJsonText(response.text || '{}'));
-    const activityTitle = parsed.activityTitle || '螢幕畫面分析完成';
+    const activityTitle = parsed.activityTitle || '螢幕畫面';
     if (parsed.activityTitle) observe('screen', `${activityTitle}：${parsed.observation || ''}`);
     if (!manual && parsed.catComment) {
       // 只有真的還是遊戲畫面才算實況（切回別的畫面就照一般規則算「主人還沒回」）
@@ -3417,14 +3451,16 @@ function proposeWidget(a: any, from: string): string {
 async function widgetReminderTick() {
   for (const r of widgets.due()) {
     const text = `⏰ ${r.text}`;
-    console.log(`[配件] 提醒時間到（${r.widgetTitle}）：${r.text}`);
+    const fromChat = r.widgetId === 'chat';
+    console.log(`[${fromChat ? '提醒' : '配件'}] 提醒時間到（${r.widgetTitle}）：${r.text}`);
     if (eventClients.size) {
       pushEvent('pet-says', { text: text.slice(0, 80), emotion: 'happy' });
-      void desktopNotify(`西雅的提醒（${r.widgetTitle}）`, r.text);
+      void desktopNotify(fromChat ? '西雅的提醒' : `西雅的提醒（${r.widgetTitle}）`, r.text);
+      if (fromChat) noteSaid(text);
     } else {
       const cfg = lineConfig();
       if (cfg) {
-        void pushToOwner(cfg, [{ type: 'text', text: `${text}（${r.widgetTitle}）` }], false);
+        void pushToOwner(cfg, [{ type: 'text', text: fromChat ? text : `${text}（${r.widgetTitle}）` }], false);
         appendLineHistory('pet', text);
       }
     }
@@ -3783,6 +3819,19 @@ RESULT.md 的摘要要直接回答主人的問題，並寫清楚：它是什麼�
         const out = await toolbox.run(String(a.tool || ''), ctx.via === 'line' ? 'LINE 聊天' : '聊天');
         if (a.note) toolbox.setNote(String(a.tool || ''), String(a.note));
         return `${out}\n（只挑主人要的重點講，不要整段照貼。）`;
+      }
+      case 'set_reminder': {
+        const r = widgets.addChatReminder({ text: a.text, clock: a.clock, inMinutes: a.inMinutes, repeat: a.repeat });
+        if (!r.ok || !r.reminder) return `沒登記成：${r.reason}。照實跟主人說，不要說會叫他。`;
+        const when = new Date(r.reminder.at).toLocaleString('zh-TW', { hour12: false, month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        return `登記好了：${when}${r.reminder.repeat ? '（每天）' : ''}會說「${r.reminder.text}」（id ${r.reminder.id}）。桌寵要開著才會在桌面上叫；畫面沒開會傳 LINE。電腦關機就叫不了——主人要睡很久或要關機的話，提醒他自己也設個手機鬧鐘。`;
+      }
+      case 'my_reminders': {
+        if (a.cancel) return widgets.cancelReminder(String(a.cancel)) ? `取消了 ${a.cancel}。` : `找不到 ${a.cancel}。`;
+        const list = widgets.chatReminders();
+        return list.length
+          ? list.map((r) => `- ${r.id}：${new Date(r.at).toLocaleString('zh-TW', { hour12: false })}${r.repeat ? '（每天）' : ''}「${r.text}」`).join('\n')
+          : '現在沒有登記任何提醒。';
       }
       default:
         return `沒有這個工具：${name}`;
@@ -6234,6 +6283,22 @@ function buildProactiveRefs(opts: {
   return map;
 }
 
+/** 螢幕偵測沒讀到標題時的預設字（不要拿來當「主人的畫面」講） */
+const PLACEHOLDER_TITLE_RE = /分析完成|已讀取當前畫面|^螢幕畫面$/;
+/**
+ * 11/15：回來時要不要抱怨主人離開太久（以前每次都從「等了你 22 小時」開始）。
+ * 離開 12 小時以上、最近 3 次打招呼都沒抱怨過，才有機會；傲嬌滑桿越高越容易（25%～75%）。
+ */
+let lastGrumbleAt = 0;
+let greetingsSinceGrumble = 3;
+function grumbleNote(awayMin: number, personality: any): string {
+  const tsun = Math.max(0, Math.min(100, Number(personality?.tsundere ?? 60)));
+  const can = awayMin >= 12 * 60 && greetingsSinceGrumble >= 3 && Math.random() < 0.25 + tsun / 200;
+  return can
+    ? '（他離開很久了，你可以小小抱怨一句，一句就好，用撒嬌或傲嬌的方式，不要讓他有罪惡感。）'
+    : '（不要抱怨他離開多久、不要說「等了你幾小時」「丟下我」這種話，自然地歡迎他就好。）';
+}
+
 // 7. 主動打招呼（陪伴感）：開啟桌寵 / 主人離開一陣子回來 / 深夜還在用電腦 / 整點報時
 app.post('/api/greeting', async (req: Request, res: Response) => {
   try {
@@ -6269,8 +6334,8 @@ app.post('/api/greeting', async (req: Request, res: Response) => {
         : reason === 'late_night'
         ? '主人到了深夜還在用電腦。用你的語氣關心他（不要說教，像朋友那樣）。如果【你最近幾小時自己說過的話】裡已經叫他去睡過了，這次就換個方式，例如只是陪著、聊他正在做的事，不要再叫他睡。'
         : reason === 'startup'
-          ? `主人剛打開桌寵，你們上次見面是${awayText}前。像朋友見面一樣打招呼。`
-          : `主人離開電腦${awayText}，剛剛回來了。像朋友看到他回座位一樣打招呼（可以好奇他剛剛去哪、或歡迎他回來）。`;
+          ? `主人剛打開桌寵，你們上次見面是${awayText}前。像朋友見面一樣打招呼。${grumbleNote(away, personality)}`
+          : `主人離開電腦${awayText}，剛剛回來了。像朋友看到他回座位一樣打招呼（可以好奇他剛剛去哪、或歡迎他回來）。${grumbleNote(away, personality)}`;
 
     // 河木鎮：早上起床 / 下班回家 / 她還在上班
     const worldCtx: GreetingContext = worldEnabled()
@@ -6283,7 +6348,10 @@ app.post('/api/greeting', async (req: Request, res: Response) => {
       const cand = eventMemory.dueFollowUps(Date.now(), 2);
       if (cand.length) await verifyOpenEvents({ only: cand.map((e) => e.id) });
     }
-    const due = reason === 'late_night' || worldCtx.kind ? [] : eventMemory.dueFollowUps(Date.now(), 1);
+    // 11/15：24 小時內已經問過的事（不管在哪裡問的）不再拿來打招呼
+    const due = (reason === 'late_night' || worldCtx.kind ? [] : eventMemory.dueFollowUps(Date.now(), 1)).filter(
+      (e) => !threads.askedRecently(`${e.keyword} ${e.summary}`)
+    );
     const dueFresh = due.length > 0 ? eventFreshLines(due[0]) : [];
 
     // 早上見面：昨晚做的夢；今天是紀念日
@@ -6312,7 +6380,7 @@ app.post('/api/greeting', async (req: Request, res: Response) => {
       useLastTopic
         ? `［記憶編號：last_topic］主人上次跟你說的最後一句話是：「${String(lastTopic).slice(0, 80)}」。如果主人這句話提到一件之後會有結果的事，就像朋友一樣直接關心那件事的結果，而且提到那件事時要沿用主人原本的用詞，不要換成別的事；如果只是閒聊就不用提。`
         : '',
-      currentActivity?.title ? `［記憶編號：screen_now］主人目前螢幕上是：「${currentActivity.title}」。` : '',
+      currentActivity?.title && !PLACEHOLDER_TITLE_RE.test(String(currentActivity.title)) ? `［記憶編號：screen_now］主人目前螢幕上是：「${currentActivity.title}」。` : '',
     ]
       .filter(Boolean)
       .join('\n');
@@ -6323,7 +6391,7 @@ app.post('/api/greeting', async (req: Request, res: Response) => {
       anniversaries,
       discoveries,
       lastTopic: useLastTopic ? String(lastTopic).slice(0, 80) : undefined,
-      currentActivityTitle: currentActivity?.title ? String(currentActivity.title) : undefined,
+      currentActivityTitle: currentActivity?.title && !PLACEHOLDER_TITLE_RE.test(String(currentActivity.title)) ? String(currentActivity.title) : undefined,
     });
 
     const prompt = `你是住在主人電腦上的桌寵貓娘「雙子星貓」，名字叫「西雅」，是主人身邊的朋友。
@@ -6336,12 +6404,13 @@ ${describeMealState()}
 ${describeRecentChat({ withIds: true })}
 ${describeMyRecentLines()}
 ${coreMemory.describeForChat({ withIds: true })}
+${threads.askedBlock()}
 
 【現在的情況】：${situation}
 ${worldCtx.situation ? `${worldCtx.situation}\n（鎮上的人：${world.snapshot().residents.map((r) => `${r.name}（${r.role}）`).join('、')}；地點：${world.snapshot().places.map((p) => p.name).join('、')}）` : ''}
 ${extras}
 
-要求：只能提上面真的有的事，背景資料裡沒有的行程或事件不要自己編。
+要求：只能提上面真的有的事，背景資料裡沒有的行程或事件不要自己編。不要提到程式、系統、分析、推薦、設定、功能這類幕後的東西（例如「螢幕分析剛跑完」「把推薦關掉」），只說朋友會說的話。
 【引用鎖規則】：如果你的話裡有提到或關心「主人的具體事件、計畫、剛剛聊過的事、螢幕畫面或核心筆記」，一定要在 JSON 的 "refs" 陣列填上對應的記憶編號（例如 ["${due[0]?.id || 'chat_recent'}"]）；如果只是單純打招呼、報時、講天氣、講你自己的事或河木鎮的事，沒有提主人的具體事件，"refs" 就填 []。沒有編號的事不准當成主人的事來說。
 像真人朋友一樣自然，依照時間（早上 / 中午 / 晚上 / 深夜）調整內容，例如早上可以說早安${mealRecentlyFull() ? '' : '、吃飯時間可以問吃了沒'}。
 只說 ${worldCtx.kind === 'homecoming' ? '2~3 句（80字內' : '1~2 句（40字內'}，${persona.lengthHint}），不要每次都用同樣的開頭。輸出嚴格 JSON：
@@ -6388,7 +6457,13 @@ ${extras}
       }
     }
     const emotion = PET_EMOTIONS.includes(parsed.emotion) ? parsed.emotion : 'happy';
-    const text = String(parsed.text || '').trim();
+    // 11/15：長度也照「話癆」滑桿用程式切（提示詞寫 40 字，以前常常寫到 130 字）
+    const gChars = Math.round((worldCtx.kind === 'homecoming' ? 80 : 40) * (0.6 + (Math.max(0, Math.min(100, Number(personality?.chatty ?? 60))) / 100) * 0.8));
+    const gLimited = limitReply(String(parsed.text || '').trim(), { chars: gChars, hard: Math.round(gChars * 1.35) + 8, segs: 2, why: '打招呼' });
+    if (gLimited.cut) console.log(`[長度] 打招呼切掉了超過的部分（${gChars} 字）`);
+    const text = gLimited.text.replace(/\[\[NEXT\]\]/g, ' ').trim();
+    if (/抱怨|等了你|才回來|丟下|長香菇|寂寞/.test(text)) lastGrumbleAt = Date.now();
+    greetingsSinceGrumble = /抱怨|等了你|才回來|丟下|長香菇/.test(text) ? 0 : greetingsSinceGrumble + 1;
     noteSaid(text);
     eventMemory.markAskedIfMentioned(due.map((e) => e.id), text);
     if (worldCtx.kind && text) presence.afterGreeting(worldCtx, parsed.gift && typeof parsed.gift === 'object' ? parsed.gift : null);
@@ -6838,6 +6913,15 @@ async function replyOnLine(cfg: LineConfig, batch: LineBatch) {
     const sn = studyNote();
     if (sn) lineExtra.這次的狀態 = (lineExtra.這次的狀態 || '') + sn;
   }
+  // 11/15：長度額度（跟「話癆」滑桿連動）＋ 不要落入固定模板
+  const lineBudget = replyBudget({
+    userText,
+    chatty: Number((lineStore.desktopContext().personality as any)?.chatty),
+    gaming: Boolean(gpuYield?.gameRunning()),
+    detail: Boolean(search) || images.length > 0,
+  });
+  lineExtra.這次的狀態 =
+    (lineExtra.這次的狀態 || '') + budgetPrompt(lineBudget) + shapePrompt(merged.filter((m) => m.role !== 'user').map((m) => String(m.content || '')));
   const lineInjected = injectDynamicContext(
     contents,
     [linePicked, ...Object.values(lineExtra)].filter((x) => x && x.trim()).join('\n')
@@ -6893,7 +6977,12 @@ async function replyOnLine(cfg: LineConfig, batch: LineBatch) {
     return send([{ type: 'text', text: '哈…本喵剛剛訊號不好，再說一次嘛～' }]);
   }
 
-  const { cleanText, detectedKeywords } = extractKeywords(raw);
+  const lineExtracted = extractKeywords(raw);
+  const detectedKeywords = lineExtracted.detectedKeywords;
+  const lineFinalBudget = lineToolCalls.length ? widen(lineBudget) : lineBudget;
+  const lineLimited = limitReply(lineExtracted.cleanText, lineFinalBudget);
+  const cleanText = lineLimited.text.trim() || lineExtracted.cleanText;
+  if (lineLimited.cut) console.log(`[長度] (LINE) 切掉了超過的部分（${lineFinalBudget.why}）`);
   const emotion = extractEmotion(raw);
   relationship.apply({ type: 'chat', emotion });
   eventMemory.markAskedIfMentioned(events.dueIds, cleanText);

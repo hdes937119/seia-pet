@@ -141,6 +141,26 @@ export const CHAT_TOOL_DECLS = [
     description: '跑你工具箱裡的一個工具（例如主人問價格，就跑你做的抓價工具），結果交回給你再告訴主人。要等幾十秒，跑之前先跟主人說一聲。tool＝工具 id 或名稱；note＝（可省略）這次用完你對這個工具的一句心得。',
     parametersJsonSchema: { type: 'object', properties: { tool: { type: 'string' }, note: { type: 'string' } }, required: ['tool'] },
   },
+  {
+    name: 'set_reminder',
+    description:
+      '登記一個定時提醒：時間到你會在桌面上說出 text（並跳 Windows 通知；桌寵畫面沒開就傳 LINE）。主人說「幾點叫我」「X 分鐘後提醒我」，或你答應了要在某個時間做某件事時，一定要用這個真的登記——沒登記就不能答應。clock＝"02:40" 這種時間（今天過了就算明天）；或 inMinutes＝幾分鐘後；repeat＝"daily" 每天。text＝時間到時你要說的話（用你的口吻，40 字內）。',
+    parametersJsonSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string' },
+        clock: { type: 'string', description: '例如 "02:40"、"18:30"' },
+        inMinutes: { type: 'number' },
+        repeat: { type: 'string', enum: ['daily'] },
+      },
+      required: ['text'],
+    },
+  },
+  {
+    name: 'my_reminders',
+    description: '看你登記了哪些提醒；cancel＝提醒的 id（要取消時填）。主人說「不用叫我了」「改時間」時先看、再取消或重新登記。',
+    parametersJsonSchema: { type: 'object', properties: { cancel: { type: 'string' } } },
+  },
 ];
 
 export const CHAT_TOOL_NAMES = CHAT_TOOL_DECLS.map((t) => t.name);

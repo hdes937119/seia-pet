@@ -70,6 +70,13 @@ export function createRecall(dataDir: string, log: (m: string) => void = console
   const lastSeenSeq = new Map<string, number>();
   const bySeqIdx = new Map<number, number>();
   const dupKey = (role: string, text: string) => `${role}|${text}`;
+  /**
+   * 11/15：同一句話（角色、時間、內容都一樣）只記一次。以前只記「這句話最後一次出現的時間」，
+   * 同一句話在兩個時間出現時（例如兩次「怎樣算做完？」）前端每次送歷史紀錄都會輪流通過，寫進了 92 筆重複。
+   * 舊的重複在讀檔時跳過（原始檔只增不改，不刪）。
+   */
+  const exact = new Set<string>();
+  const exactKey = (role: string, at: number, text: string) => `${role}|${at}|${text}`;
   /** 11/9：後端記完整回覆、前端又把拆開的每一句送來 → 同一段話記兩次。她的一句話如果包含在 10 分鐘內她另一則更長的回覆裡，就是分段，不再記 */
   const segNorm = (t: string) => String(t || '').replace(/\[\[[A-Z]+(:[^\]]*)?\]\]/g, '').replace(/\s+/g, '');
   function isSegmentOf(role: string, text: string, at: number): boolean {
@@ -98,10 +105,15 @@ export function createRecall(dataDir: string, log: (m: string) => void = console
     totalLen += toks.length;
     seq = Math.max(seq, r.seq);
     const k = dupKey(r.role, r.text);
-    lastSeen.set(k, r.at);
-    lastSeenSeq.set(k, r.seq);
+    exact.add(exactKey(r.role, r.at, r.text));
+    // 只往後更新：舊時間的同一句不會把「最近一次」蓋回去
+    if (!(lastSeen.get(k)! > r.at)) {
+      lastSeen.set(k, r.at);
+      lastSeenSeq.set(k, r.seq);
+    }
   }
 
+  let skippedDup = 0;
   try {
     if (fs.existsSync(file)) {
       for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
@@ -109,8 +121,9 @@ export function createRecall(dataDir: string, log: (m: string) => void = console
         try {
           const r = JSON.parse(line);
           if (r && typeof r.text === 'string') {
-            if (isSegmentOf(r.role, r.text, Number(r.at) || 0)) {
+            if (isSegmentOf(r.role, r.text, Number(r.at) || 0) || exact.has(exactKey(r.role, Number(r.at) || 0, r.text))) {
               seq = Math.max(seq, Number(r.seq) || 0);
+              skippedDup++;
               continue;
             }
             index(r);
@@ -123,6 +136,7 @@ export function createRecall(dataDir: string, log: (m: string) => void = console
   } catch (err: any) {
     log(`[回憶] 讀取失敗：${err?.message}`);
   }
+  if (skippedDup) log(`[回憶] 讀取時跳過 ${skippedDup} 筆重複或分段的紀錄（原始檔不動）`);
 
   /** 記下一句話（同一句在 2 分鐘內重複送來就不記） */
   function append(role: StreamRecord['role'], text: string, ch: StreamRecord['ch'], at = Date.now()) {
@@ -131,6 +145,7 @@ export function createRecall(dataDir: string, log: (m: string) => void = console
       .replace(/\[\[NEXT\]\]/g, '\n')
       .trim();
     if (!clean) return;
+    if (exact.has(exactKey(role, at, clean.slice(0, 2000)))) return;
     const seen = lastSeen.get(dupKey(role, clean.slice(0, 2000)));
     if (seen !== undefined && Math.abs(at - seen) < 10 * 60 * 1000) return;
     if (isSegmentOf(role, clean, at)) return;

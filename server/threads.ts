@@ -161,11 +161,11 @@ export function createThreads(dataDir: string, deps: ThreadsDeps) {
       const label: Record<Thread['kind'], string> = { ask: '你問了還沒得到回答', followup: '可以問後續', plan: '你們約好的事', mine: '你自己好奇' };
       parts.push(`【可以接回來的話頭】\n${top.map((t) => `- ${withIds ? `[${t.id}] ` : ''}${t.text}（${label[t.kind]}）`).join('\n')}`);
     }
-    const recentAsked = st.asked.filter((a) => now - a.at < 6 * 60 * 60 * 1000).slice(-5);
-    if (recentAsked.length) parts.push(`【你最近已經問過主人的】${recentAsked.map((a) => `「${a.text}」`).join('、')}（主人回答過或沒接話就不要再問一樣的事）`);
+    const ab = askedBlock(now);
+    if (ab) parts.push(ab);
     if (!parts.length) return '';
     parts.push(
-      '（聊天方式：像真的朋友一樣，記得前面聊過的內容，接著聊下去；回應完主人這句之後，如果氣氛適合，可以自然地反問一句、或接回上面一個話頭，一次最多一個。主人在忙、在打遊戲、或只回很短的話時就不要追問。不要像在做訪問，不要每句都以問句結尾。）'
+      '（聊天方式：像真的朋友一樣，記得前面聊過的內容。先好好回應主人這一句；話頭只有在主人這句剛好接得上、或聊天自然停下來的時候才拿出來，主人換了話題就跟著主人走，不要把舊話題拉回來。大部分時候不用反問，不要像在做訪問。）'
     );
     return parts.join('\n');
   }
@@ -279,6 +279,39 @@ ${lines.map(fmt).join('\n')}
     return f;
   }
 
+  /** 11/15：她主動說的話（打招呼、整點報時、螢幕吐槽、追問…）裡的問句也記成「問過了」，所有地方共用一份 */
+  function noteSaid(text: string, now = Date.now()) {
+    const qs = extractQuestions(String(text || ''));
+    if (!qs.length) return;
+    for (const q of qs) st.asked.push({ text: q.slice(0, 60), at: now });
+    st.asked = st.asked.slice(-60);
+    save();
+  }
+  /** 這件事 24 小時內是不是已經問過了（字面重疊夠多就算） */
+  function askedRecently(text: string, now = Date.now(), hours = 24): boolean {
+    const t = String(text || '');
+    if (!t.trim()) return false;
+    // 換個說法也算（「早上教小朋友順利嗎」≈「昨天教小朋友後來有順利嗎」）：至少共用 3 個兩字詞、重疊 34% 以上
+    const shared = (a: string) => {
+      const x = bigrams(a);
+      let n = 0;
+      for (const g of bigrams(t)) if (x.has(g)) n++;
+      return n;
+    };
+    return st.asked.some((a) => now - a.at < hours * 3_600_000 && shared(a.text) >= 3 && overlap(a.text, t) >= 0.34);
+  }
+  /** 給所有會開口的提示詞：最近 24 小時已經問過主人的事 */
+  function askedBlock(now = Date.now()): string {
+    const seen = new Set<string>();
+    const recent = st.asked
+      .filter((a) => now - a.at < 24 * 3_600_000)
+      .reverse()
+      .filter((a) => (seen.has(a.text) ? false : (seen.add(a.text), true)))
+      .slice(0, 8)
+      .reverse();
+    return recent.length ? `【你最近 24 小時已經問過主人的】${recent.map((a) => `「${a.text}」`).join('、')}（同一件事不要再問；主人回答過的就當作知道了）` : '';
+  }
+
   function markFollowUpSent(now = Date.now()) {
     if (!st.followUp) return;
     st.followUp.sent = true;
@@ -290,7 +323,7 @@ ${lines.map(fmt).join('\n')}
     return { ...st, open: open() };
   }
 
-  return { masterSpoke, afterReply, describeForChat, reflect, dueFollowUp, markFollowUpSent, snapshot };
+  return { masterSpoke, afterReply, describeForChat, reflect, dueFollowUp, markFollowUpSent, noteSaid, askedRecently, askedBlock, snapshot };
 }
 
 export type Threads = ReturnType<typeof createThreads>;
