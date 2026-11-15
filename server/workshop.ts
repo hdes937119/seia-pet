@@ -168,6 +168,16 @@ function newId(now = Date.now()) {
 
 const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
 
+/**
+ * 11/15：叫工坊跑一段腳本的指令。腳本（base64）放在標準輸入的最前面，指令只寫「先讀幾個字元」：
+ * head -c 只讀剛好那麼多（不會多讀），後面的標準輸入（金鑰、委託的 tar.gz）留給腳本自己讀，跟以前一樣。
+ * 以前是把整份腳本塞在指令參數裡，超過 Windows 的長度上限就 spawn ENAMETOOLONG。
+ */
+function jobCmd(script: string): { cmd: string; head: string } {
+  const head = b64(script);
+  return { cmd: `head -c ${head.length} | base64 -d > /tmp/seia-job.sh && bash /tmp/seia-job.sh`, head };
+}
+
 /** 工坊的模型設定（dsh 的 --patch 覆蓋檔） */
 export function patchYaml(model: string) {
   return `- id: llm-pi-ai
@@ -552,10 +562,12 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
   function runWsl(script: string, stdinText = '', timeoutSec = TIMEOUT_SEC + 90): Promise<{ stdout: string; stderr: string; code: number | null }> {
     return new Promise((resolve) => {
       // 腳本第一行會從標準輸入讀一行（真金鑰，交給轉接站）；金鑰不放在指令參數裡（參數在工坊裡看得到）
-      const cmd = `echo ${b64(script)} | base64 -d > /tmp/seia-job.sh && bash /tmp/seia-job.sh`;
+      // 11/15：腳本本身也改從標準輸入送（放在最前面），不塞進指令參數——Windows 一行指令最多約 3 萬 2 千字，
+      // 技巧、筆記累積變長之後會 spawn ENAMETOOLONG（見 jobCmd）
+      const { cmd, head } = jobCmd(script);
       const child = spawn('wsl.exe', ['-d', deps.distro, '-e', 'bash', '-c', cmd], { windowsHide: true, env: wslEnv() });
       child.stdin.on('error', () => {});
-      child.stdin.end(stdinText ? `${stdinText}\n` : '\n');
+      child.stdin.end(head + (stdinText ? `${stdinText}\n` : '\n'));
       const out = collector(64 * 1024 * 1024);
       const err = collector();
       child.stdout.on('data', (d: Buffer) => out.push(d));
@@ -583,10 +595,10 @@ export function createWorkshop(dataDir: string, deps: WorkshopDeps) {
     log(`[工坊] ${label}`);
     const raw = (script: string, stdin: string, timeoutSec: number) =>
       new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
-        const cmd = `echo ${b64(script)} | base64 -d > /tmp/seia-job.sh && bash /tmp/seia-job.sh`;
+        const { cmd, head } = jobCmd(script);
         const child = spawn('wsl.exe', ['-d', deps.distro, '-e', 'bash', '-c', cmd], { windowsHide: true, env: wslEnv() });
         child.stdin.on('error', () => {});
-        child.stdin.end(`${stdin}\n`);
+        child.stdin.end(`${head}${stdin}\n`);
         const chunks: Buffer[] = [];
         const err = collector();
         child.stdout.on('data', (d: Buffer) => chunks.push(d));
