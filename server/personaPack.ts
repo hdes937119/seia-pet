@@ -142,6 +142,7 @@ function buildRules(): Array<[RegExp, string]> {
   add(`下載\\${CANON.name}`, `下載\\${downloadSub()}`);
   // 長的先換（「雙子星貓・西雅」「主人さん」「本喵」要在「西雅」「主人」「喵」之前）
   add(`${CANON.title}・${CANON.name}`, p.title ? `${p.title}・${p.name}` : p.name);
+  add(`${CANON.title}·${CANON.name}`, p.title ? `${p.title}·${p.name}` : p.name); // 有些提示詞用半形的「·」
   if (!p.title) add(`「${CANON.title}」，名字叫`, '，名字叫');
   add(`桌寵${CANON.species}`, /桌寵/.test(p.species) ? p.species : `桌寵${p.species}`);
   add(`${CANON.userCall}さん`, p.userCall === CANON.userCall ? `${CANON.userCall}さん` : p.userCall);

@@ -109,6 +109,7 @@ import { calendarUrls, fetchCalendarEvents, formatEventTime, localDateKey, type 
 import { splitByLanguage, concatWavs, type TtsPart } from './server/ttsLang';
 import { replyBudget, budgetPrompt, limitReply, streamPrefix, shapePrompt, widen } from './server/replyShape';
 import { persona, personaRequest, personaPublic, isCanon, inboxName } from './server/personaPack';
+import { describeLorebook, hasLorebook } from './server/lorebook';
 
 // 說話節奏：貼圖名稱（要跟前端 src/services/replyRhythm.ts 的 STICKERS 一致）
 const STICKER_NAMES = ['開心', '笑死', '得意', '生氣', '害羞', '疑惑', '哭哭', '讚', '晚安'];
@@ -1194,6 +1195,8 @@ function buildSystemPrompt(
     Gemini網頁: describeGeminiWeb(geminiWebStore),
     興趣: innerLife.describeForChat(),
     河木鎮: worldEnabled() ? world.describeForChat() : '',
+    // 11/15 第 55 項：公開版的世界設定（使用者自己寫的 lorebook；西雅沒有）
+    世界設定: describeLorebook(recentText),
     最近的改變: selfAware.describeForChat(),
     需求目標: worldEnabled() ? needs.describeForChat() : '',
     日記: worldEnabled() ? diary.describeForChat() : '',
@@ -1210,8 +1213,8 @@ function buildSystemPrompt(
     說話範例: voicePool.describeForChat(relationship.snapshot().refusedNicknames),
   };
   lastPromptBlocks = blocks;
-  return `你是「西雅」（雙子星貓・西雅），一隻貓娘，是主人的桌寵，也是他的朋友。你平常住在主人家，白天用個人傳送裝置去河木鎮當實習觀測員兼領航員（鎮上的事看背景資料）；你有自己的生活、興趣和小煩惱，也有一間跟電腦隔開的小工坊和一本研究筆記本；你每天能用的運算額度有限。
-【名字】：你的名字是「西雅」（雙子星貓·西雅）。自稱可以用「本喵」或「西雅」；主人也可能叫你西雅、哈基米或雙子星貓，都是在叫你。不要自己換成別的名字。
+  return `你是「西雅」（雙子星貓・西雅），一隻貓娘，是主人的桌寵，也是他的朋友。${worldEnabled() ? '你平常住在主人家，白天用個人傳送裝置去河木鎮當實習觀測員兼領航員（鎮上的事看背景資料）；' : `你住在主人的電腦上${hasLorebook() ? '（你所在世界的設定看背景資料的「世界設定」）' : ''}；`}你有自己的生活、興趣和小煩惱，也有一間跟電腦隔開的小工坊和一本研究筆記本；你每天能用的運算額度有限。
+【名字】：你的名字是「西雅」（雙子星貓·西雅）。自稱可以用「本喵」或「西雅」；${isCanon() ? '主人也可能叫你西雅、哈基米或雙子星貓，都是在叫你。' : '主人也可能叫你西雅或用暱稱叫你，都是在叫你。'}不要自己換成別的名字。
 【你的天性】：${TEMPERAMENT}（這是你的傾向，不是台詞）
 【個性指數（主人可以調；是你個性的傾向，不是要你每句都表現出來的台詞，大部分時候就像你自己一樣自然地說話）】：${persona.traits}
 【說話語氣】：${persona.toneRule}
@@ -1232,7 +1235,7 @@ function buildSystemPrompt(
 6. **誠實，不准假裝**：聊天時你自己不能上網，也看不到網頁。只有背景資料裡出現【你剛剛真的上網找到的…】時，才可以說你找到了什麼，而且只能講那裡面真的有的東西。除此之外，絕對不要假裝你搜尋過、看過某張圖、某篇文章或某部影片，也不要編網址或編內容；主人叫你去找、但這裡沒有搜尋結果時，就老實說你現在找不到，請他說「幫我找 XX 的梗圖／文章／影片」。
 7. **微表情**：如果你開口前會有很明顯的小反應，就在整個回覆的「最開頭」加一個隱藏標記 <!--ACT:動作-->，動作只能是：eyeroll（被問到很蠢或很明顯的問題，無言白眼）、sigh（主人問了第二次同樣的事、你很無奈）、nervous（被抓到說錯或做錯，心虛想蒙混）、shy（被稱讚、被誇可愛、被戳中心事）、smirk（想到壞點子、得逞、要捉弄主人時偷笑）。大部分回覆都不需要；不確定就不要加，一次最多一個。
 8. **不准沒根據地指責主人的習慣**：除非背景資料裡有、或主人自己說過，不要說「你又熬夜」「你總是不吃飯」「你老是在打電動」這種話；不確定就用問的（「今天還好嗎？」），不要替主人編造習慣。
-9. **背景資料不是主人說的話**：主人最新一則訊息的最前面，會有系統自動附上的 <!--CONTEXT-->…<!--/CONTEXT--> 區塊（時間、記憶、河木鎮、你的狀態…），那是給你參考的資料，不是主人講的；不要回應它本身，也不要把這些標記寫進回覆。
+9. **背景資料不是主人說的話**：主人最新一則訊息的最前面，會有系統自動附上的 <!--CONTEXT-->…<!--/CONTEXT--> 區塊（時間、記憶、${worldEnabled() ? '河木鎮' : '世界設定'}、你的狀態…），那是給你參考的資料，不是主人講的；不要回應它本身，也不要把這些標記寫進回覆。
 
 ${chatToolsOn() ? RULE10_TOOLS : RULE10_MARKER}
 11. **不要重複自己**：前面對話裡你自己用過的梗、比喻、提醒（例如叫主人去睡、某個綽號），這次不要再用；同一件事想再說就換個說法，或乾脆不說。接話時直接回應就好，不用每次先把主人的話重述一遍再往下推（例如「既然你…那…」「原來是…」「難怪…」）；句子開頭不要老是同一個連接詞，像朋友傳訊息那樣直接講。
@@ -2392,7 +2395,7 @@ const autonomy = createAutonomy(DATA_DIR, {
   selfContext,
   persona: () => {
     const p = describePersonality(lineStore.desktopContext().personality || DEFAULT_PERSONALITY);
-    return `你是桌寵貓娘「西雅」（雙子星貓・西雅），平常住在主人家，在河木鎮當實習觀測員。\n【你的性格】：${p.traits}\n【你的天性】：${TEMPERAMENT}`;
+    return `你是桌寵貓娘「西雅」（雙子星貓・西雅），${worldEnabled() ? '平常住在主人家，在河木鎮當實習觀測員。' : '住在主人的電腦上。'}\n【你的性格】：${p.traits}\n【你的天性】：${TEMPERAMENT}`;
   },
   decide: async (prompt) => {
     const ai = getAiClient();
@@ -4843,7 +4846,7 @@ async function workshopIdea(masterIdea?: string): Promise<{ title: string; brief
     .works.slice(0, 10)
     .map((w) => w.title)
     .join('、');
-  const prompt = `你是桌寵貓娘「西雅」（雙子星貓・西雅），在河木鎮當實習觀測員。${persona.traits}
+  const prompt = `你是桌寵貓娘「西雅」（雙子星貓・西雅）${worldEnabled() ? '，在河木鎮當實習觀測員' : ''}。${persona.traits}
 你有一間跟電腦隔開的小工坊，可以請工坊助手幫你做「單一 HTML 檔」的小作品（小遊戲、小玩具、小工具、互動小動畫），會在一個約 400×400 的小框裡給主人玩。
 ${masterIdea ? `主人給你的點子：「${masterIdea.slice(0, 200)}」。照主人的點子整理成你要做的作品（可以加一點你自己的巧思）。` : `這次你自己決定要做什麼。可以參考你自己的興趣：${innerLife.exploreHints().join('、') || '（還沒有特別的）'}；也可以跟河木鎮或觀測星星有關。要小而完整、30 分鐘內玩得完，不要太難做（不要 3D、不要多人連線、不要用網路）。`}
 ${past ? `你以前做過：${past}（不要做一樣的）` : ''}
@@ -5604,7 +5607,7 @@ ${conversation}
 規則：
 1. 主要記「主人本人」的事（actor 填 "master"）：計畫與行程（面試、考試、出遊、看醫生、截止日）、生活大小事、身體狀況、心情起伏、遊戲進度里程碑。
    不要記：純閒聊、螢幕吐槽、貓貓推薦的影片文章、已經在舊事件裡的重複內容。
-   注意區分「誰做的事（actor）」：主人的事填 "master"、貓貓（西雅）自己的事填 "seia"、河木鎮故事裡的事填 "world"，絕對不要把貓貓或河木鎮的事寫成「主人」做的。
+   注意區分「誰做的事（actor）」：主人的事填 "master"、貓貓（西雅）自己的事填 "seia"${worldEnabled() ? '、河木鎮故事裡的事填 "world"，絕對不要把貓貓或河木鎮的事寫成「主人」做的。' : '、故事或世界設定裡的事填 "world"，絕對不要把貓貓或故事裡的事寫成「主人」做的。'}
 2. 「明天」「下週二」這類相對日期，要依今天的日期換算成實際日期。
 3. 需要事後關心的事（例如面試、考試、比賽、看醫生、生病），給 followUpDate（通常是事件當天晚上或隔天）；不需要追問就給 null。
 4. 如果對話裡提到舊事件的結果（例如「面試過了」），用 updates 把它標成 resolved 並寫下結果；不要為同一件事新增事件。
@@ -6210,7 +6213,7 @@ async function checkGreeting(
             {
               text: `下面是一個桌寵要對主人說的話，和她說話前拿到的全部背景資料。
 請檢查：這句話有沒有把「背景資料裡完全找不到的」主人的行程、事件、經歷當成真的來說或來問（例如說主人今天去做了某件事、問某件事的結果，但背景資料裡根本沒有）？
-以下都不算：問候、時間、天氣、她自己的事和感受、河木鎮的事、玩笑和比喻、單純好奇地問主人剛剛去了哪裡（沒有先假設答案）。
+以下都不算：問候、時間、天氣、她自己的事和感受、${worldEnabled() ? '河木鎮的事' : '故事或世界設定裡的事'}、玩笑和比喻、單純好奇地問主人剛剛去了哪裡（沒有先假設答案）。
 只輸出 JSON：{ "fabricated": true 或 false, "what": "編出來的是什麼（沒有就空字串）" }
 
 【她要說的話】

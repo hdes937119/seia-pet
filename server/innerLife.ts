@@ -280,7 +280,7 @@ export function createInnerLife(dataDir: string) {
         .sort((a, b) => weightNow(b, now) - weightNow(a, now))
         .slice(0, 40)
         .map((i) => i.topic);
-      const prompt = `你在幫一隻桌寵貓娘「西雅」整理她這幾天「看到、聽到的東西」。下面是觀察紀錄（主人的螢幕、主人問 Gemini 的問題、主人跟她聊的話、陪主人逛到的、她自己隨便逛到的、她在河木鎮碰到的事）。
+      const prompt = `你在幫一隻桌寵貓娘「西雅」整理她這幾天「看到、聽到的東西」。下面是觀察紀錄（主人的螢幕、主人問 Gemini 的問題、主人跟她聊的話、陪主人逛到的、她自己隨便逛到的${persona().world && process.env.WORLD_ENABLED !== 'false' ? '、她在河木鎮碰到的事' : ''}）。
 西雅的天性：${TEMPERAMENT}
 請幫每一筆標上：
 - topic：生活化的主題，2~6 字（例如「盆栽」「Path of Exile」「重金屬音樂」「咖啡」「機械鍵盤」）。同一件事請盡量沿用已經有的主題名稱：${known.length ? known.join('、') : '（目前沒有）'}
