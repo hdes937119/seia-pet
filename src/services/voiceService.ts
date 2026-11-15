@@ -11,9 +11,13 @@ class VoiceService {
   private currentEnvelope: { data: Float32Array; step: number; peak: number } | null = null;
   private static readonly ENVELOPE_STEP = 0.02;
   private ttsAborts = new Set<AbortController>();
-  // 逐句播放佇列：每一句一加入就先開始合成，播放時依序取出
-  private queue: Array<Promise<string | null>> = [];
+  // 逐句播放佇列（11/15）：一次只合成一句，播這句的時候先合成下一句（以前每句一加入就同時送去合成，
+  // GPT-SoVITS 改用 CPU 時會互搶，一句拖到 30～50 秒）
+  private queue: Array<{ text: string; at: number; p?: Promise<string | null> }> = [];
   private isPlayingQueue = false;
+  // 後端說 GPT-SoVITS 現在用 CPU（打遊戲時）：排太久的舊句子直接丟掉，只念新的
+  private slow = false;
+  private static readonly SLOW_STALE_MS = 15_000;
   // 每次 speak / stop 都會遞增，舊的 TTS 請求回來時就知道自己已經過期
   private speakToken = 0;
   // GPT-SoVITS 單獨唸很短的句子（例如連傳時第一則的「等等！」「欸？」）常常會變成一片空白或被吞掉，
@@ -99,7 +103,14 @@ class VoiceService {
   }
 
   private pushToQueue(text: string) {
-    this.queue.push(this.synthesize(text, this.speakToken));
+    const now = Date.now();
+    if (this.slow) {
+      // 還沒開始合成、而且排了 15 秒以上的舊句子＝之前的話，主人已經不在那個情境了 → 丟掉
+      const before = this.queue.length;
+      this.queue = this.queue.filter((it) => it.p || now - it.at < VoiceService.SLOW_STALE_MS);
+      if (this.queue.length < before) console.log(`[語音] 遊戲中語音比較慢，丟掉 ${before - this.queue.length} 句排太久的舊話`);
+    }
+    this.queue.push({ text, at: now });
     if (!this.isPlayingQueue) void this.playQueue(this.speakToken);
   }
 
@@ -160,6 +171,7 @@ class VoiceService {
       });
       if (!response.ok) throw new Error(`後端拒絕連線，狀態碼: ${response.status}`);
       const data = await response.json();
+      if (typeof data?.slow === 'boolean') this.slow = data.slow;
       if (token !== this.speakToken) return null;
       return data?.audioBase64 || null;
     } catch (error: any) {
@@ -239,8 +251,14 @@ class VoiceService {
     if (this.speakingListener) this.speakingListener(true);
     try {
       while (this.queue.length > 0 && token === this.speakToken) {
-        const base64 = await this.queue.shift()!;
+        const item = this.queue[0];
+        if (!item.p) item.p = this.synthesize(item.text, token);
+        const base64 = await item.p;
         if (token !== this.speakToken) return;
+        if (this.queue[0] === item) this.queue.shift();
+        // 播這句的同時先合成下一句（只先做一句，不會互搶）
+        const next = this.queue[0];
+        if (next && !next.p) next.p = this.synthesize(next.text, token);
         if (base64) await this.playAudio(base64, token);
       }
     } finally {

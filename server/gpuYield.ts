@@ -82,17 +82,23 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs: number) {
   return false;
 }
 
-export function startGpuYield(opts: GpuYieldOptions) {
+/** 11/15：給語音和聊天看——現在 GPT-SoVITS 是不是用 CPU（慢）、遊戲是不是開著 */
+export interface GpuYieldState {
+  mode: () => 'cpu' | 'gpu' | null;
+  gameRunning: () => boolean;
+}
+
+export function startGpuYield(opts: GpuYieldOptions): GpuYieldState | null {
   const log = opts.log || ((m: string) => console.log(m));
-  if (process.platform !== 'win32') return;
+  if (process.platform !== 'win32') return null;
   if (/^(off|0|false|no)$/i.test(process.env.GPU_YIELD || '')) {
     log('[顯卡讓位] .env 設了 GPU_YIELD=off，不啟用');
-    return;
+    return null;
   }
   const sovitsDir = findSovitsDir(opts.petDir);
   if (!sovitsDir) {
     log('[顯卡讓位] 找不到 GPT-SoVITS 資料夾，不啟用');
-    return;
+    return null;
   }
   const games = (process.env.GPU_YIELD_PROCESSES || 'PathOfExile')
     .split(',')
@@ -189,4 +195,5 @@ export function startGpuYield(opts: GpuYieldOptions) {
     tick().catch(() => {});
     setInterval(() => tick().catch(() => {}), POLL_MS);
   }, 20_000);
+  return { mode: () => mode, gameRunning: () => Date.now() - lastGameSeenAt < POLL_MS * 2 + 5_000 };
 }

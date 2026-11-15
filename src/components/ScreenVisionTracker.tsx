@@ -34,12 +34,20 @@ const isGamingActivity = (a: ScreenActivity | null) =>
 const PACE_KEY = 'gemini_twin_cat_vision_pace';
 type VisionPace = 'calm' | 'normal' | 'dense';
 const PACE: Record<VisionPace, { cutAbs: number; spike: number; drift: number; fallbackMul: number; label: string }> = {
-  calm: { cutAbs: 20, spike: 3, drift: 90, fallbackMul: 3, label: '安靜' },
-  normal: { cutAbs: 12, spike: 2.5, drift: 60, fallbackMul: 2.5, label: '普通' },
-  dense: { cutAbs: 7, spike: 2, drift: 36, fallbackMul: 1.5, label: '密集' },
+  // 11/15：保底時間縮短（普通：遊戲冷卻 2 分鐘 × 1.25 ≈ 2.5 分鐘；以前 × 2.5 ＝ 5 分鐘，POE 這種一直在動的畫面常常等到保底才看）
+  calm: { cutAbs: 20, spike: 3, drift: 90, fallbackMul: 2, label: '安靜' },
+  normal: { cutAbs: 12, spike: 2.5, drift: 60, fallbackMul: 1.25, label: '普通' },
+  dense: { cutAbs: 7, spike: 2, drift: 36, fallbackMul: 1, label: '密集' },
 };
 const SAMPLE_MS = 1000;
 const CUT_REFRACTORY_MS = 3000;
+// 11/15 另外兩種重大時刻（畫面一直在動的遊戲，「這一秒比平常動很多」很難成立）：
+// 1. 畫面變暗又亮回來（讀圖、傳送、死亡）：亮度掉到 DARK_LUMA 以下，再回到 BRIGHT_LUMA 以上
+const DARK_LUMA = 24;
+const BRIGHT_LUMA = 45;
+// 2. 整體換了樣子（新地圖、新場景）：最近 5 秒和 15～25 秒前的 3×3 格平均顏色差很多
+const SHIFT_DIST = 18;
+const SHIFT_REFRACTORY_MS = 30_000;
 const WARMUP_SAMPLES = 4;
 const MAX_KEPT = 9;
 const SKIP_RETRY_MS = 30_000;
@@ -176,6 +184,12 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
   const sampleCountRef = useRef<number>(0);
   const driftAccRef = useRef<number>(0);
   const lastCutAtRef = useRef<number>(0);
+  // 11/15：亮度和 3×3 格平均顏色（偵測變暗又亮回來、整體換場景）
+  const lumaRef = useRef<number>(0);
+  const lumaBaseRef = useRef<number>(0);
+  const darkSinceRef = useRef<number>(0);
+  const gridHistRef = useRef<Array<{ at: number; grid: Float32Array }>>([]);
+  const lastShiftAtRef = useRef<number>(0);
   const keptRef = useRef<KeptFrame[]>([]);
   const lastCutFullRef = useRef<{ at: number; data: string } | null>(null);
   const retryAtRef = useRef<number>(0);
@@ -266,6 +280,10 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
 
   const resetChangeTracking = useCallback(() => {
     prevScorePixelsRef.current = null;
+    lumaBaseRef.current = 0;
+    darkSinceRef.current = 0;
+    gridHistRef.current = [];
+    lastShiftAtRef.current = 0;
     baselineRef.current = 0;
     sampleCountRef.current = 0;
     driftAccRef.current = 0;
@@ -292,6 +310,27 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
     const prev = prevScorePixelsRef.current;
     prevScorePixelsRef.current = new Uint8ClampedArray(cur);
     if (!prev) return null;
+    // 亮度和 3×3 格平均顏色（這一格就算，跟上一格無關）
+    {
+      const grid = new Float32Array(27);
+      const cnt = new Float32Array(9);
+      let lum = 0;
+      for (let y = 0; y < h; y++)
+        for (let x = 0; x < w; x++) {
+          const i = (y * w + x) * 4;
+          const g = Math.min(2, Math.floor((y * 3) / h)) * 3 + Math.min(2, Math.floor((x * 3) / w));
+          grid[g * 3] += cur[i];
+          grid[g * 3 + 1] += cur[i + 1];
+          grid[g * 3 + 2] += cur[i + 2];
+          cnt[g]++;
+          lum += 0.299 * cur[i] + 0.587 * cur[i + 1] + 0.114 * cur[i + 2];
+        }
+      for (let g = 0; g < 9; g++) for (let k = 0; k < 3; k++) grid[g * 3 + k] /= Math.max(1, cnt[g]);
+      lumaRef.current = lum / (w * h);
+      const hist = gridHistRef.current;
+      hist.push({ at: Date.now(), grid });
+      while (hist.length && Date.now() - hist[0].at > 30_000) hist.shift();
+    }
     let sum = 0;
     for (let i = 0; i < cur.length; i += 4) {
       const dr = Math.abs(cur[i] - prev[i]);
@@ -550,7 +589,39 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
           now - lastCutAtRef.current >= CUT_REFRACTORY_MS;
         // 最近的平均（突然的大跳動只算一部分，免得一次換場就把平均拉太高）
         baselineRef.current = sampleCountRef.current === 1 ? score : base * 0.9 + Math.min(score, base * 3 + 10) * 0.1;
-        if (isCut) {
+        // 另外兩種重大時刻（11/15）
+        let extraCut = '';
+        if (warmedUp) {
+          const luma = lumaRef.current;
+          if (!darkSinceRef.current && luma < DARK_LUMA && lumaBaseRef.current > BRIGHT_LUMA + 5) darkSinceRef.current = now;
+          else if (darkSinceRef.current && luma > BRIGHT_LUMA) {
+            const darkMs = now - darkSinceRef.current;
+            darkSinceRef.current = 0;
+            if (darkMs >= 700 && darkMs <= 90_000) extraCut = 'dark';
+          }
+          if (!darkSinceRef.current) lumaBaseRef.current = lumaBaseRef.current ? lumaBaseRef.current * 0.9 + luma * 0.1 : luma;
+          if (!extraCut && !darkSinceRef.current && now - lastShiftAtRef.current >= SHIFT_REFRACTORY_MS) {
+            const hist = gridHistRef.current;
+            const avg = (from: number, to: number) => {
+              const rows = hist.filter((x) => now - x.at >= from && now - x.at <= to);
+              if (rows.length < 3) return null;
+              const out = new Float32Array(27);
+              for (const r of rows) for (let k = 0; k < 27; k++) out[k] += r.grid[k] / rows.length;
+              return out;
+            };
+            const recent = avg(0, 5_000);
+            const before = avg(15_000, 25_000);
+            if (recent && before) {
+              let d = 0;
+              for (let k = 0; k < 27; k++) d += Math.abs(recent[k] - before[k]);
+              if (d / 27 >= SHIFT_DIST) extraCut = 'shift';
+            }
+          }
+          if (extraCut && now - lastCutAtRef.current < CUT_REFRACTORY_MS) extraCut = '';
+          // 變暗又亮回來通常也換了場景：之後 30 秒不再算一次「整體換樣子」，免得同一件事算兩次
+          if (extraCut) lastShiftAtRef.current = now;
+        }
+        if (isCut || extraCut) {
           lastCutAtRef.current = now;
           driftAccRef.current = 0;
           keepFrame(true);

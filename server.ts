@@ -1154,8 +1154,11 @@ function buildSystemPrompt(
     ? ''
     : isGamingActivity(currentActivity)
       ? `【主人正在玩遊戲：「${currentActivity.title}」】：${actObservation}
-你是陪主人一起玩的遊戲夥伴：可以自然地聊遊戲裡正在發生的事（關卡、Boss、角色、裝備、剛剛的操作），即時加油、吐槽或給一個小建議；主人在打遊戲，回覆要短（1~2句）、好讀。`
-      : `【背景參考（主人目前螢幕視窗為「${currentActivity.title}」，僅在主人主動問起畫面或相關話題時才引用，平時請專心回應主人的話！）】：${actObservation}`;
+你是陪主人一起玩的遊戲夥伴：可以自然地聊遊戲裡正在發生的事（關卡、Boss、角色、裝備、剛剛的操作），即時加油、吐槽或給一個小建議。
+**主人正在打遊戲（這條比說話節奏的規則優先）**：這次只回 1 則（不要用 [[NEXT]] 連傳），1~2 句、30 字內，一眼看得懂；語音在遊戲中念得很慢，話越長主人越晚聽到。`
+      : `【背景參考（主人目前螢幕視窗為「${currentActivity.title}」，僅在主人主動問起畫面或相關話題時才引用，平時請專心回應主人的話！）】：${actObservation}${
+          gpuYield?.gameRunning() ? '\n**主人的遊戲現在開著**：這次只回 1 則（不要用 [[NEXT]] 連傳），1~2 句、30 字內。' : ''
+        }`;
 
   // 提示詞分成兩段：前面是不常變的身分和規則、後面才是每次都會變的狀況。
   // 這樣 Gemini 的隱式快取能重複使用前面那一大段（快取命中的輸入便宜約 90%）。借用 dsh-feiyu-mood 的做法。
@@ -1936,7 +1939,7 @@ function ensureVoiceLoaded(): Promise<void> {
 }
 
 // 玩 PoE 等吃顯卡的遊戲時，GPT-SoVITS 改用 CPU 跑，讓出專屬 GPU 記憶體（見 server/gpuYield.ts）
-startGpuYield({
+const gpuYield = startGpuYield({
   baseUrl: SOVITS.baseUrl,
   petDir: __dirname,
   onRestarted: () => {
@@ -1962,18 +1965,26 @@ app.post('/api/tts', async (req, res) => {
       .replace(/[*_`#]/g, '')
       .replace(/~/g, '～')
       .trim();
-    if (!safeText) return res.json({ audioBase64: null, fallback: true });
+    // 11/15：GPT-SoVITS 改用 CPU（打遊戲時）一句要 10～50 秒 → 告訴前端，前端會丟掉排太久的舊句子、一次只合成一句
+    const slow = gpuYield?.mode() === 'cpu';
+    if (!safeText) return res.json({ audioBase64: null, fallback: true, slow });
+    // 前端不要了（被新的話打斷）就不再合成剩下的段落
+    const clientGone = abortOnClientClose(req, res);
     // 有日文假名的小句用日文念，其他照舊中英混合（見 server/ttsLang.ts）
     const parts: TtsPart[] = splitByLanguage(safeText);
-    if (!parts.length) return res.json({ audioBase64: null, fallback: true });
+    if (!parts.length) return res.json({ audioBase64: null, fallback: true, slow });
     if (parts.length > 1) console.log(`[TTS] 分段：${parts.map((p) => `${p.lang}「${p.text}」`).join(' ')}`);
 
     // 一段一段合成（GPT-SoVITS 一次只念一種語言），再接成一個 WAV
     const wavs: Buffer[] = [];
     for (const part of parts) {
+      if (clientGone.signal.aborted) {
+        console.log('[TTS] 前端已經不要這句了，剩下的不合成');
+        return;
+      }
       const params = sovitsParams(part.text, part.lang, speed);
       const t0 = Date.now();
-      const response = await fetch(`${SOVITS.baseUrl}/tts?${params.toString()}`, { signal: AbortSignal.timeout(60_000) });
+      const response = await fetch(`${SOVITS.baseUrl}/tts?${params.toString()}`, { signal: AbortSignal.any([AbortSignal.timeout(60_000), clientGone.signal]) });
       if (!response.ok) {
         const errorDetail = await response.text();
         throw new Error(`GPT-SoVITS 拒絕連線: ${errorDetail}`);
@@ -1983,9 +1994,10 @@ app.post('/api/tts', async (req, res) => {
     }
 
     const base64Audio = concatWavs(wavs).toString('base64');
-    return res.json({ audioBase64: base64Audio });
+    return res.json({ audioBase64: base64Audio, slow });
 
   } catch (err: any) {
+    if (res.writableEnded || res.destroyed) return console.log('[TTS] 前端打斷了，這句不念');
     console.error('GPT-SoVITS 連線失敗:', err?.message);
     return res.status(200).json({ audioBase64: null, fallback: true });
   }
