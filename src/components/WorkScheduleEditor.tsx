@@ -1,3 +1,4 @@
+import { persona } from '../persona';
 import React, { useEffect, useState } from 'react';
 
 /**
@@ -63,7 +64,7 @@ export const WorkScheduleEditor: React.FC = () => {
       <div>
         🗓️ 我的班表
         <span className="block text-[10px] text-slate-400 mt-0.5">
-          你出門上班時，西雅也傳送去河木鎮上班；下班回家會跟你說鎮上的事。行事曆寫「請假」那天她也放假。
+          你出門上班時，{persona().name}也傳送去河木鎮上班；下班回家會跟你說鎮上的事。行事曆寫「請假」那天她也放假。
         </span>
       </div>
       {DAYS.map(([day, label]) => {

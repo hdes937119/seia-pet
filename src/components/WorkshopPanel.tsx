@@ -1,3 +1,4 @@
+import { persona } from '../persona';
 import React, { useCallback, useEffect, useState } from 'react';
 import { FolderGrants } from './FolderGrants';
 import { CommissionPanel } from './CommissionPanel';
@@ -118,12 +119,12 @@ export const WorkshopPanel: React.FC = () => {
     <div className="px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs space-y-2">
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1.5">
-          🛠️ 西雅的工坊
+          🛠️ {persona().name}的工坊
           {typeof (window as any).electronAPI?.openDesk === 'function' && (
             <button
               type="button"
               onClick={() => (window as any).electronAPI.openDesk('')}
-              title="桌寵資料夾裡的「西雅的工作桌」：她做好的作品、委託成果都在這裡；想給她看的檔案放進「給西雅」"
+              title={`桌寵資料夾裡的「${persona().desk}」：做好的作品、委託成果都在這裡；想給${persona().name}看的檔案放進「${persona().inbox}」`}
               className="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-[10px]"
             >
               📂 工作桌
@@ -178,7 +179,7 @@ export const WorkshopPanel: React.FC = () => {
               </span>
               <span className="text-[10px] text-slate-400 shrink-0">{w.kind === 'lab' && w.status === 'done' ? '🔬 跑完了' : STATUS_LABEL[w.status]}</span>
             </div>
-            {w.comment && <p className="text-[10px] text-purple-200">西雅：{w.comment}</p>}
+            {w.comment && <p className="text-[10px] text-purple-200">{persona().name}：{w.comment}</p>}
             {w.kind === 'lab' && w.result && (
               <p className="text-[10px] text-slate-300 whitespace-pre-wrap max-h-28 overflow-auto">{w.result.slice(0, 800)}</p>
             )}
@@ -224,7 +225,7 @@ export const WorkshopPanel: React.FC = () => {
       </div>
       <p className="text-[10px] text-slate-500">作品在隔離的工坊裡做、在沙盒裡跑；只有你在下面給的資料夾，工作時才會唯讀掛進去。「讓她展示」之後，她聊天時才會提起它。</p>
       <details className="pt-1 border-t border-slate-800">
-        <summary className="text-[10px] text-slate-400 cursor-pointer">進階：借她資料夾（現在想給她看的檔案，放進工作桌的「給西雅」就好）</summary>
+        <summary className="text-[10px] text-slate-400 cursor-pointer">進階：借她資料夾（現在想給她看的檔案，放進工作桌的「{persona().inbox}」就好）</summary>
         <FolderGrants />
       </details>
     </div>

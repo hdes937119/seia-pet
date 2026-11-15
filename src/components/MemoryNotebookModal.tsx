@@ -1,3 +1,4 @@
+import { titleOrName } from '../persona';
 import React, { useState } from 'react';
 import { BookOpen, Star, Clock, Trash2, Pin, Plus, Sparkles, AlertCircle } from 'lucide-react';
 import { MemoryKeyword } from '../types';
@@ -45,7 +46,7 @@ export const MemoryNotebookModal: React.FC<MemoryNotebookModalProps> = ({ memori
               <BookOpen className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="font-bold text-slate-100 text-base sm:text-lg">雙子星貓的秘密小筆記</h2>
+              <h2 className="font-bold text-slate-100 text-base sm:text-lg">{titleOrName()}的秘密小筆記</h2>
               <p className="text-xs text-slate-400">艾賓浩斯關鍵字動態衰變與永久記憶核心</p>
             </div>
           </div>
@@ -118,7 +119,7 @@ export const MemoryNotebookModal: React.FC<MemoryNotebookModalProps> = ({ memori
         {/* Add manual memory modal inline */}
         {showAddForm && (
           <form onSubmit={handleAddManual} className="p-4 bg-purple-950/20 border-b border-purple-900/30">
-            <h4 className="text-xs font-semibold text-purple-200 mb-2">手動為雙子星貓寫入不可磨滅的永久記憶：</h4>
+            <h4 className="text-xs font-semibold text-purple-200 mb-2">手動為{titleOrName()}寫入不可磨滅的永久記憶：</h4>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-2">
               <input
                 type="text"
@@ -273,7 +274,7 @@ export const MemoryNotebookModal: React.FC<MemoryNotebookModalProps> = ({ memori
             ))
           ) : (
             <div className="text-center py-12 text-slate-500 text-xs">
-              目前暫無衰變中的關鍵字。在聊天時多聊聊你的日常生活，雙子星貓會自動捕捉！
+              目前暫無衰變中的關鍵字。在聊天時多聊聊你的日常生活，{titleOrName()}會自動捕捉！
             </div>
           )}
         </div>

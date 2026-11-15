@@ -33,7 +33,7 @@ export interface SelfEdit {
 
 /** 備份、比對時跳過的（記憶和紀錄、套件、產出、私人檔、金鑰） */
 export const SELF_SKIP = (rel: string) =>
-  /^(data|node_modules|dist|build|logs|\.git|西雅的工作桌|voice-files|TTS|seia projects|\.aistudio)(\/|$)/.test(rel) ||
+  /^(data|node_modules|dist|build|logs|\.git|西雅的工作桌|工作桌|voice-files|TTS|seia projects|\.aistudio)(\/|$)/.test(rel) ||
   /^(\.env.*|ngrok-authtoken\.txt|ngrok-domain\.txt|ngrok\.exe|sovits-dir\.txt|sync-dir\.txt|sync-state\.json)$/.test(rel) ||
   /\.claude-new$/.test(rel) ||
   /(^|\/)__pycache__(\/|$)/.test(rel);

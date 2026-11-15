@@ -1,3 +1,4 @@
+import { persona, fullName, titleOrName } from '../persona';
 import React, { useState, useRef, useEffect } from 'react';
 import { Paperclip, Film, Send, Smile, Volume2, VolumeX, CheckCheck, Square, Mic, Loader2, X } from 'lucide-react';
 import { prepareChatMedia, type PreparedMedia } from '../utils/chatMedia';
@@ -172,7 +173,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             >
               <img
                 src="/bili_cover.jpg"
-                alt="雙子星貓"
+                alt={titleOrName()}
                 className="w-full h-full object-cover object-[59%_18%] scale-150"
               />
             </div>
@@ -182,7 +183,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="font-bold text-sm sm:text-base">
-                雙子星貓・西雅
+                {fullName()}
               </h3>
             </div>
             {currentActivity && <p className="text-xs text-slate-400">{`正在注視：${currentActivity.title}`}</p>}
@@ -245,7 +246,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 <div className="w-8 h-8 rounded-full overflow-hidden border border-indigo-400/50 shrink-0 shadow-md">
                   <img
                     src="/bili_cover.jpg"
-                    alt="雙子星貓"
+                    alt={titleOrName()}
                     className="w-full h-full object-cover object-[59%_18%] scale-150"
                   />
                 </div>
@@ -335,7 +336,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
             <div className="w-8 h-8 rounded-full overflow-hidden border border-indigo-400/50 shrink-0">
               <img
                 src="/bili_cover.jpg"
-                alt="雙子星貓"
+                alt={titleOrName()}
                 className="w-full h-full object-cover object-[59%_18%] scale-150"
               />
             </div>
@@ -351,7 +352,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                   style={{ animationDelay: '300ms' }}
                 />
               </div>
-              <span className="text-[11px]">西雅輸入中…（可直接輸入打斷）</span>
+              <span className="text-[11px]">{persona().name}輸入中…（可直接輸入打斷）</span>
             </div>
           </div>
         )}
@@ -362,14 +363,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       {/* Sticker Drawer */}
       {showStickers && (
         <div className="p-3 bg-slate-900 border-t border-slate-800 grid grid-cols-3 sm:grid-cols-6 gap-2">
-          {[
-            '（摸摸雙子星貓的頭頂）',
-            '（投餵一塊特製香脆大豆包）',
-            '（遞上一杯無糖冰綠茶）',
-            '哼！本喵才沒有做錯呢！',
-            '本喵知道錯了對不起嘛喵～',
-            '辛苦啦～抱一個！',
-          ].map((sticker, idx) => (
+          {(persona().canon
+            ? [
+                '（摸摸雙子星貓的頭頂）',
+                '（投餵一塊特製香脆大豆包）',
+                '（遞上一杯無糖冰綠茶）',
+                '哼！本喵才沒有做錯呢！',
+                '本喵知道錯了對不起嘛喵～',
+                '辛苦啦～抱一個！',
+              ]
+            : [
+                `（摸摸${persona().name}的頭）`,
+                '（遞上一塊小點心）',
+                '（遞上一杯飲料）',
+                '今天好累喔…',
+                '你在做什麼呀？',
+                '辛苦啦～抱一個！',
+              ]
+          ).map((sticker, idx) => (
             <button
               key={idx}
               onClick={() => sendSticker(sticker)}
@@ -526,7 +537,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               ? '隨時輸入並發送，將立即打斷思考並優先回覆你...'
               : chatStyle === 'line'
               ? '像平常回 LINE 一樣輸入訊息...'
-              : '輸入給西雅的訊息...'
+              : `輸入給${persona().name}的訊息...`
           }
           className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-purple-500/70 transition-colors"
         />

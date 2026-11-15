@@ -12,6 +12,7 @@ import {
   Discovery,
   ExploreSettings,
 } from './types';
+import { persona, fullName } from './persona';
 import { voiceService } from './services/voiceService';
 import { streamChat, createSentenceSplitter } from './services/chatStream';
 import { splitSegments, typingDelayMs, speakableText, type Segment } from './services/replyRhythm';
@@ -100,15 +101,28 @@ const STORAGE_KEY_VIDEOS = 'gemini_twin_cat_videos';
 const STORAGE_KEY_MODEL = 'gemini_twin_cat_preferred_model';
 const STORAGE_KEY_EXPLORE = 'gemini_twin_cat_explore';
 
-const DEFAULT_PERSONALITY: PersonalityConfig = {
+// 11/15 第 54 項：西雅照舊；其他桌寵用人格包的滑桿預設值、沒有預設的自訂描述
+const SEIA_DEFAULT_PERSONALITY: PersonalityConfig = {
   sharpTongue: 60,
   chatty: 75,
   humorous: 80,
   tsundere: 70,
   customPrompt: '經典大豆包整活風格，愛開玩笑認錯快，適時吐槽主人正在做的事',
 };
+function defaultPersonality(): PersonalityConfig {
+  const p = persona();
+  if (p.canon) return SEIA_DEFAULT_PERSONALITY;
+  const sl = p.sliders || {};
+  return {
+    sharpTongue: sl.sharpTongue ?? 40,
+    chatty: sl.chatty ?? 50,
+    humorous: sl.humorous ?? 60,
+    tsundere: sl.tsundere ?? 30,
+    customPrompt: '',
+  };
+}
 
-const INITIAL_MESSAGES: ChatMessage[] = [
+const SEIA_INITIAL_MESSAGES: ChatMessage[] = [
   {
     id: 'msg_welcome',
     role: 'pet',
@@ -118,7 +132,7 @@ const INITIAL_MESSAGES: ChatMessage[] = [
   },
 ];
 
-const INITIAL_VIDEOS: DiscoveredVideo[] = [
+const SEIA_INITIAL_VIDEOS: DiscoveredVideo[] = [
   {
     id: 'vid_init_1',
     title: '【雙子星貓】哈基米出道曲！美國大豆包Gemini名場面',
@@ -141,6 +155,25 @@ const INITIAL_VIDEOS: DiscoveredVideo[] = [
   },
 ];
 
+function initialMessages(): ChatMessage[] {
+  const p = persona();
+  if (p.canon) return SEIA_INITIAL_MESSAGES;
+  return [
+    {
+      id: 'msg_welcome',
+      role: 'pet',
+      content: `嗨，${p.userCall}！我是${fullName(p)}，剛搬到你的電腦上。我會在旁邊陪你打遊戲、寫 code，有什麼想聊的就跟我說吧${p.tic ? `${p.tic}～` : '！'}`,
+      timestamp: '剛剛',
+      isRead: true,
+    },
+  ];
+}
+
+/** 西雅的初始影片清單是她專屬的示範；其他桌寵從空的開始，自己去逛 */
+function initialVideos(): DiscoveredVideo[] {
+  return persona().canon ? SEIA_INITIAL_VIDEOS : [];
+}
+
 const PIN_MODE_KEY = 'gemini_twin_cat_pin_mode';
 
 export default function App() {
@@ -148,9 +181,9 @@ export default function App() {
   const [personality, setPersonality] = useState<PersonalityConfig>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_PERSONALITY);
-      return saved ? JSON.parse(saved) : DEFAULT_PERSONALITY;
+      return saved ? JSON.parse(saved) : defaultPersonality();
     } catch {
-      return DEFAULT_PERSONALITY;
+      return defaultPersonality();
     }
   });
 
@@ -158,22 +191,22 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_MESSAGES);
-      if (!saved) return INITIAL_MESSAGES;
+      if (!saved) return initialMessages();
       // 上次關閉時還在串流的訊息，重開後一律視為已結束
       return (JSON.parse(saved) as ChatMessage[]).map((m) =>
         m.isStreaming ? { ...m, isStreaming: false } : m
       );
     } catch {
-      return INITIAL_MESSAGES;
+      return initialMessages();
     }
   });
 
   const [videos, setVideos] = useState<DiscoveredVideo[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_VIDEOS);
-      return saved ? JSON.parse(saved) : INITIAL_VIDEOS;
+      return saved ? JSON.parse(saved) : initialVideos();
     } catch {
-      return INITIAL_VIDEOS;
+      return initialVideos();
     }
   });
 
@@ -1178,7 +1211,7 @@ export default function App() {
               onToggleChatStyle={() => {}}
               voiceEnabled={voiceEnabled}
               onToggleVoice={() => setVoiceEnabled(!voiceEnabled)}
-              onClearMessages={() => setMessages(INITIAL_MESSAGES)}
+              onClearMessages={() => setMessages(initialMessages())}
               personality={personality}
               permanentMemories={memories.filter((m) => m.isPermanent)}
               currentActivity={currentActivity}

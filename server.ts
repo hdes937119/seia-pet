@@ -67,7 +67,7 @@ import { isWorkshopMissing } from './server/winText';
 import { createHostActions, type ActionPlan } from './server/hostActions';
 import { createCommissions, defaultBudget, APPROVE_RE, NEGATE_RE, STOP_RE, PAUSE_RE, RESUME_RE, type Commission, type ProjectJob, type JobPlaytest, acceptPassed, autoItems, manualItems } from './server/commission';
 import { createWidgets, type WidgetSource } from './server/widgets';
-import { createDesk } from './server/desk';
+import { createDesk, DESK_NAME } from './server/desk';
 
 /** 微表情：她回覆開頭的 <!--ACT:…--> */
 const PET_ACTS = ['eyeroll', 'sigh', 'nervous', 'shy', 'smirk'];
@@ -108,6 +108,7 @@ import {
 import { calendarUrls, fetchCalendarEvents, formatEventTime, localDateKey, type CalEvent } from './server/calendar';
 import { splitByLanguage, concatWavs, type TtsPart } from './server/ttsLang';
 import { replyBudget, budgetPrompt, limitReply, streamPrefix, shapePrompt, widen } from './server/replyShape';
+import { persona, personaRequest, personaPublic, isCanon, inboxName } from './server/personaPack';
 
 // 說話節奏：貼圖名稱（要跟前端 src/services/replyRhythm.ts 的 STICKERS 一致）
 const STICKER_NAMES = ['開心', '笑死', '得意', '生氣', '害羞', '疑惑', '哭哭', '讚', '晚安'];
@@ -155,7 +156,8 @@ const innerLife = createInnerLife(DATA_DIR);
 const stamina = createStamina(DATA_DIR);
 // 河木鎮：她的生活世界（見 server/world.ts、專案文件「河木鎮世界觀」）。.env 設 WORLD_ENABLED=false 可以關掉
 const world = createWorld(DATA_DIR);
-const worldEnabled = () => process.env.WORLD_ENABLED !== 'false';
+// 11/15：世界觀（河木鎮）也看人格包（公開版的新生桌寵預設關閉）
+const worldEnabled = () => process.env.WORLD_ENABLED !== 'false' && persona().world;
 
 // 她知道自己被改了什麼：更新日誌（server/pet-changelog.json）＋立繪資料夾多了新圖（見 server/selfAware.ts）
 const selfAware = createSelfAware({
@@ -210,7 +212,7 @@ const workshop = createWorkshop(DATA_DIR, {
     },
   },
   // 工作桌「給西雅」裡有東西 → 每次開工唯讀放進 /mnt/seia/desk
-  extraGrants: () => (desk.inbox(1).length ? [{ id: 'desk', path: desk.inboxDir(), label: '給西雅', mode: 'read', note: '主人放給你參考的檔案（西雅的工作桌\\給西雅）' }] : []),
+  extraGrants: () => (desk.inbox(1).length ? [{ id: 'desk', path: desk.inboxDir(), label: inboxName(), mode: 'read', note: `主人放給你參考的檔案（${DESK_NAME}\\${inboxName()}）` }] : []),
   distro: process.env.WORKSHOP_DISTRO || 'seia-workshop',
   proxyFile: path.resolve(__dirname, 'scripts', 'workshop', 'gemini-proxy.mjs'),
   model: WORKSHOP_MODEL,
@@ -620,7 +622,7 @@ app.use((req, _res, next) => {
 function getAiClient() {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return null;
-  return new GoogleGenAI({
+  const client = new GoogleGenAI({
     apiKey,
     httpOptions: {
       headers: {
@@ -628,6 +630,15 @@ function getAiClient() {
       },
     },
   });
+  // 11/15 人格包：送出去之前把標準詞（西雅、主人、本喵…）換成這隻桌寵的說法；西雅自己的人格包什麼都不換
+  if (!isCanon()) {
+    const m: any = client.models;
+    const gen = m.generateContent.bind(m);
+    const genStream = m.generateContentStream.bind(m);
+    m.generateContent = (req: any) => gen(personaRequest(req));
+    m.generateContentStream = (req: any) => genStream(personaRequest(req));
+  }
+  return client;
 }
 
 function cleanJsonText(raw: string): string {
@@ -2548,7 +2559,7 @@ const hostActions = createHostActions(DATA_DIR, {
   addFolderNames: () => ['工作桌', ...folders.active().filter((g) => g.mode === 'add').map((g) => g.label)],
   addFolder: (name) => {
     // 11/10：「工作桌」＝西雅的工作桌\成品（不用先借資料夾）
-    if (/^(西雅的)?工作桌$/.test(String(name || '').trim())) return { label: '西雅的工作桌\\成品', path: path.join(desk.root, '成品') };
+    if (/^(西雅的)?工作桌$/.test(String(name || '').trim())) return { label: `${DESK_NAME}\\成品`, path: path.join(desk.root, '成品') };
     const g = folders.resolve([name]).find((x) => x.mode === 'add');
     return g ? { label: g.label, path: g.path } : null;
   },
@@ -3569,7 +3580,7 @@ function inventoryNote(): string {
       );
     if (works.length)
       lines.push(`- 工坊做的（接著改：workshop_task 填 continue_from 名字）：${works.map((w) => `「${w.title}」（${THING_KIND[workKind(w)]}${w.status === 'running' ? '，做中' : w.status === 'failed' ? '，沒做成' : ''}）`).join('、')}`);
-    lines.push(`- 你自己的程式（桌寵專案）在 ${__dirname}，要改用 workshop_task 的 program；工作桌是 ${path.join(__dirname, '西雅的工作桌')}`);
+    lines.push(`- 你自己的程式（桌寵專案）在 ${__dirname}，要改用 workshop_task 的 program；工作桌是 ${desk.root}`);
     return `\n【你手上的東西】（每次都附上，只是用來分清楚是什麼、該用哪個工具；主人沒問就不用提）\n${lines.join('\n')}`;
   } catch {
     return '';
@@ -4533,6 +4544,9 @@ async function commissionTick() {
     commissionTicking = false;
   }
 }
+
+// 11/15：這隻桌寵是誰（前端顯示名字、設定面板）
+app.get('/api/persona', (_req: Request, res: Response) => res.json(personaPublic()));
 
 app.use('/api/widgets', (req, res, next) => {
   if (req.method !== 'GET' && !req.get('X-Gemini-Pet')) return res.status(403).json({ ok: false, reason: '缺少 X-Gemini-Pet 標頭' });
@@ -6558,7 +6572,7 @@ app.put('/api/avatar', async (req: Request, res: Response) => {
  *  - 行事曆：每天 CALENDAR_REMIND_AT（預設 20:00）之後，在 LINE 提醒「明天」的行程（每個行程只提醒一次）
  */
 
-const DEFAULT_PERSONALITY = { sharpTongue: 50, chatty: 60, humorous: 70, tsundere: 60 };
+const DEFAULT_PERSONALITY = { sharpTongue: 50, chatty: 60, humorous: 70, tsundere: 60, ...persona().sliders };
 
 // 桌寵的對話框也顯示最近 20 則 LINE 對話
 const LINE_SHOWN_ON_DESKTOP = 20;

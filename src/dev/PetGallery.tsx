@@ -10,7 +10,7 @@ function PetGallery() {
   return (
     <div className="min-h-screen p-4 text-slate-100">
       <div className="flex items-center gap-3 mb-3">
-        <h1 className="font-bold">雙子星貓 · 動作預覽</h1>
+        <h1 className="font-bold">桌寵 · 動作預覽</h1>
         <label className="text-xs flex items-center gap-1">
           <input type="checkbox" checked={talking} onChange={(e) => setTalking(e.target.checked)} />
           說話中

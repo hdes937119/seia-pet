@@ -1,3 +1,4 @@
+import { persona, titleOrName } from '../persona';
 import React from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Eye, Mic, Search } from 'lucide-react';
@@ -54,7 +55,7 @@ const AwayCard: React.FC<{ away: NonNullable<PetStageProps['away']>; onCallBack?
   return (
     <div className="absolute inset-x-[8%] bottom-[12%] z-30 flex flex-col items-center gap-1.5 px-3 py-3 rounded-2xl bg-slate-950/80 border border-purple-400/40 shadow-xl text-slate-100 backdrop-blur-md">
       <span className="text-4xl leading-none pet-anim-float">{away.emoji}</span>
-      <span className="text-xs font-semibold">西雅正在{away.label}</span>
+      <span className="text-xs font-semibold">{persona().name}正在{away.label}</span>
       <span className="font-mono text-lg text-purple-200 tabular-nums">{left > 0 ? `${mm}:${ss}` : '快回來了…'}</span>
       <span className="text-[10px] text-slate-400 text-center leading-snug">{away.awayNote}</span>
       {onCallBack && (
@@ -172,7 +173,7 @@ export const PetStage: React.FC<PetStageProps> = ({
           <div className="absolute inset-0" style={{ containerType: 'inline-size' }}>
             <img
               src={customImgUrl}
-              alt="自訂雙子星貓形象"
+              alt={`自訂${titleOrName()}形象`}
               draggable={false}
               className={`w-full h-full object-contain object-bottom drop-shadow-[0_6px_18px_rgba(76,29,149,0.55)] pet-body ${
                 isPatting ? 'pet-anim-squish' : isTalking ? 'pet-anim-talk' : 'pet-anim-float'

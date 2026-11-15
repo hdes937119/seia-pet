@@ -1,3 +1,4 @@
+import { persona } from '../persona';
 import React, { useCallback, useEffect, useState } from 'react';
 
 /**
@@ -466,7 +467,7 @@ export const CommissionPanel: React.FC = () => {
                       </summary>
                       {[...c.runs].reverse().slice(0, 5).map((r, i) => (
                         <pre key={i} className="text-[10px] text-slate-400 whitespace-pre-wrap max-h-32 overflow-auto">
-                          {time(r.at)} {r.trigger === 'schedule' ? '排程' : r.trigger === 'seia' ? '西雅用' : '手動'} {r.ok ? '✔' : `✘（${r.code}）`}{'\n'}
+                          {time(r.at)} {r.trigger === 'schedule' ? '排程' : r.trigger === 'seia' ? `${persona().name}用` : '手動'} {r.ok ? '✔' : `✘（${r.code}）`}{'\n'}
                           {r.output.slice(-800)}
                         </pre>
                       ))}

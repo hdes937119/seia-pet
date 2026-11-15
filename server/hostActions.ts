@@ -19,6 +19,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { decodeOutput } from './winText';
+import { downloadSub } from './personaPack';
 
 export type StepType = 'winget' | 'download' | 'open' | 'write_file';
 export interface ActionStep {
@@ -78,7 +79,7 @@ export interface HostDeps {
 
 const MAX_STEPS = 12;
 const downloadMaxMb = () => Number(process.env.DOWNLOAD_MAX_MB) || 500;
-export const downloadDir = () => path.join(os.homedir(), 'Downloads', '西雅');
+export const downloadDir = () => path.join(os.homedir(), 'Downloads', downloadSub());
 const RUNNABLE_RE = /\.(exe|msi|msix|appx|bat|cmd|ps1|vbs|js|jar|lnk|scr|com)$/i;
 const WINGET_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]{1,80}$/;
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -231,7 +232,7 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
         if (!(await deps.isPublicUrl(String(s.url)))) problems.push(`${n}：下載網址不是公開網站`);
         else {
           try {
-            s.check = `來源網站：${new URL(String(s.url)).hostname}｜存成：下載\\西雅\\${s.filename}`;
+            s.check = `來源網站：${new URL(String(s.url)).hostname}｜存成：下載\\${downloadSub()}\\${s.filename}`;
           } catch {
             problems.push(`${n}：看不懂這個網址`);
           }
@@ -245,8 +246,8 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
           else s.check = `用預設瀏覽器打開 ${t.slice(0, 120)}`;
         } else {
           const exists = fs.existsSync(path.join(downloadDir(), t));
-          if (!exists && !willDownload.has(t)) problems.push(`${n}：「下載\\西雅」裡沒有「${t}」，前面的步驟也不會下載它`);
-          s.check = `打開 下載\\西雅\\${t}`;
+          if (!exists && !willDownload.has(t)) problems.push(`${n}：「下載\\${downloadSub()}」裡沒有「${t}」，前面的步驟也不會下載它`);
+          s.check = `打開 下載\\${downloadSub()}\\${t}`;
           if (RUNNABLE_RE.test(t)) s.warn = '會執行這個程式（安裝檔或腳本），請確認來源';
         }
       } else if (s.type === 'write_file') {
@@ -349,7 +350,7 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
           return { ok: false, output: `下載中斷：${err?.message || err}` };
         }
         if (path.basename(dest) !== s.filename) s.filename = path.basename(dest);
-        return { ok: true, output: `存好了：下載\\西雅\\${path.basename(dest)}（${Math.round(got / 1024)} KB）` };
+        return { ok: true, output: `存好了：下載\\${downloadSub()}\\${path.basename(dest)}（${Math.round(got / 1024)} KB）` };
       }
       return { ok: false, output: '轉址太多次' };
     }
@@ -362,9 +363,9 @@ export function createHostActions(dataDir: string, deps: HostDeps) {
         return { ok: true, output: `打開了 ${t}` };
       }
       const p = path.join(downloadDir(), t);
-      if (!p.startsWith(downloadDir() + path.sep) || !fs.existsSync(p)) return { ok: false, output: `找不到 下載\\西雅\\${t}` };
+      if (!p.startsWith(downloadDir() + path.sep) || !fs.existsSync(p)) return { ok: false, output: `找不到 下載\\${downloadSub()}\\${t}` };
       spawn('explorer.exe', [p], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-      return { ok: true, output: `打開了 下載\\西雅\\${t}（安裝檔要主人自己在畫面上按下一步）` };
+      return { ok: true, output: `打開了 下載\\${downloadSub()}\\${t}（安裝檔要主人自己在畫面上按下一步）` };
     }
     if (s.type === 'write_file') {
       const f = deps.addFolder(String(s.folder));

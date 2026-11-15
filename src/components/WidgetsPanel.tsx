@@ -1,3 +1,4 @@
+import { persona } from '../persona';
 import React, { useCallback, useEffect, useState } from 'react';
 
 /**
@@ -78,7 +79,7 @@ export const WidgetsPanel: React.FC = () => {
   return (
     <div className="px-3 py-2 rounded-xl bg-slate-900/70 border border-slate-700 text-xs space-y-2">
       <div className="flex items-center justify-between">
-        <span>🧩 西雅的配件</span>
+        <span>🧩 {persona().name}的配件</span>
         <span className="text-[10px] text-slate-400">已安裝 {installed.length} 個</span>
       </div>
       {msg && <p className="text-[10px] text-amber-200">{msg}</p>}

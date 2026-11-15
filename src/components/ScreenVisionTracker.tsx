@@ -1,3 +1,4 @@
+import { titleOrName } from '../persona';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Monitor,
@@ -1010,7 +1011,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
                 🔍 畫面識別：{lastActivity.observation}
               </p>
               <p className="text-xs font-medium text-pink-200 bg-purple-950/50 border border-pink-500/30 px-2.5 py-1.5 rounded-lg leading-relaxed">
-                ✦ 雙子星貓：「{lastActivity.catComment}」
+                ✦ {titleOrName()}：「{lastActivity.catComment}」
               </p>
             </div>
           </div>

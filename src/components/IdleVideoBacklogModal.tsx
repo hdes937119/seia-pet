@@ -1,3 +1,4 @@
+import { titleOrName } from '../persona';
 import React, { useState } from 'react';
 import { Film, Compass, ExternalLink, MessageCircle, Sparkles, RefreshCw, Trash2 } from 'lucide-react';
 import { DiscoveredVideo } from '../types';
@@ -119,7 +120,7 @@ export const IdleVideoBacklogModal: React.FC<IdleVideoBacklogModalProps> = ({
 
                 {/* Cat's personal spicy commentary */}
                 <div className="p-2.5 rounded-lg bg-purple-950/40 border border-purple-800/30 text-xs text-purple-200">
-                  <span className="font-bold text-purple-400">雙子星貓短評：</span>
+                  <span className="font-bold text-purple-400">{titleOrName()}短評：</span>
                   <span>「{vid.catReview}」</span>
                 </div>
 

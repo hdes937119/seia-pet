@@ -1,3 +1,4 @@
+import { persona } from '../persona';
 import React, { useCallback, useEffect, useState } from 'react';
 
 /**
@@ -112,7 +113,7 @@ export const ActionsPanel: React.FC = () => {
 
   const stepLine = (s: Step) => {
     if (s.type === 'winget') return `${s.id}${s.check ? `（${s.check}）` : ''}`;
-    if (s.type === 'download') return `${s.url}\n→ 下載\\西雅\\${s.filename}`;
+    if (s.type === 'download') return `${s.url}\n→ 下載\\${persona().downloads}\\${s.filename}`;
     if (s.type === 'open') return s.target || '';
     return `${s.folder}\\${s.path}`;
   };
@@ -134,7 +135,7 @@ export const ActionsPanel: React.FC = () => {
             </span>
             <span className="text-[10px] text-slate-400 shrink-0">{STATUS[p.status]}</span>
           </div>
-          {p.why && <p className="text-[10px] text-purple-200 whitespace-pre-wrap">西雅：{p.why}</p>}
+          {p.why && <p className="text-[10px] text-purple-200 whitespace-pre-wrap">{persona().name}：{p.why}</p>}
           <ol className="space-y-1">
             {p.steps.map((s, i) => {
               const r = p.results.find((x) => x.i === i);

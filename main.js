@@ -14,6 +14,25 @@ let mainWindow;
 // 改掉會讓聊天紀錄、記憶、立繪「看起來不見」，所以保持原本的 localhost。
 const APP_URL = 'http://localhost:3000';
 
+// 11/15 第 54 項：這隻桌寵是誰（名字、工作桌資料夾名），問後端的 /api/persona；問不到之前先當作西雅
+let petPersona = { name: '西雅', desk: '西雅的工作桌', ok: false };
+async function refreshPersona() {
+    try {
+        const r = await fetch(`${APP_URL}/api/persona`);
+        if (r.ok) {
+            const j = await r.json();
+            if (j && j.name) petPersona = { name: String(j.name), desk: String(j.desk || '西雅的工作桌'), ok: true };
+        }
+    } catch {
+        // 後端還沒起來
+    }
+    return petPersona;
+}
+// 開機時後端可能還沒好：每 3 秒問一次，問到就停
+const personaPoll = setInterval(() => {
+    refreshPersona().then((p) => p.ok && clearInterval(personaPoll));
+}, 3000);
+
 // 置頂：off＝一般視窗、normal＝一般置頂、game＝最上層（無邊框全螢幕的遊戲也蓋不住她）
 // 前端開機時會用 set-pin-mode 告訴這裡主人選的模式
 let pinMode = 'normal';
@@ -183,7 +202,7 @@ ipcMain.handle('open-widget', async (_event, id, title) => {
         height: 480,
         minWidth: 200,
         minHeight: 160,
-        title: `西雅的配件：${String(title || '配件').slice(0, 30)}`,
+        title: `${petPersona.name}的配件：${String(title || '配件').slice(0, 30)}`,
         autoHideMenuBar: true,
         backgroundColor: '#ffffff',
         webPreferences: {
@@ -224,7 +243,10 @@ ipcMain.handle('widget-bridge', async (event, action, args) => {
 
 // 西雅的工作桌（11/9）：用檔案總管打開桌寵資料夾裡的「西雅的工作桌」（sub＝裡面的子資料夾，例如「委託」）
 ipcMain.handle('open-desk', async (_event, sub) => {
-    const root = path.join(__dirname, '西雅的工作桌');
+    // 西雅＝「西雅的工作桌」；其他桌寵＝「工作桌」（後端決定，見 server/personaPack.ts deskName）
+    const p = petPersona.ok ? petPersona : await refreshPersona();
+    if (!p.ok) return false;
+    const root = path.join(__dirname, p.desk);
     let target = root;
     const s = String(sub || '').replace(/\//g, '\\');
     if (s && !s.includes('..') && !/^[\\]/.test(s) && !/^[a-zA-Z]:/.test(s)) {
@@ -254,7 +276,7 @@ ipcMain.handle('open-workshop-work', (_event, id, entry, title) => {
         height: isCommission ? 720 : 720,
         minWidth: 240,
         minHeight: 240,
-        title: `${isCommission ? '西雅的委託' : '西雅的工坊'}：${String(title || '作品').slice(0, 30)}`,
+        title: `${petPersona.name}的${isCommission ? '委託' : '工坊'}：${String(title || '作品').slice(0, 30)}`,
         autoHideMenuBar: true,
         backgroundColor: '#ffffff',
         webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
@@ -632,7 +654,7 @@ async function browserAction(j) {
         browserLoginWin = new BrowserWindow({
             width: 1100,
             height: 820,
-            title: '幫西雅登入（她的瀏覽器）',
+            title: `幫${petPersona.name}登入（她的瀏覽器）`,
             autoHideMenuBar: true,
             webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, session: browserSession() },
         });
@@ -755,7 +777,7 @@ function startPlaytestServer() {
             req.on('end', () => {
                 try {
                     const j = JSON.parse(nb || '{}');
-                    if (Notification.isSupported()) new Notification({ title: String(j.title || '西雅').slice(0, 40), body: String(j.body || '').slice(0, 200) }).show();
+                    if (Notification.isSupported()) new Notification({ title: String(j.title || petPersona.name).slice(0, 40), body: String(j.body || '').slice(0, 200) }).show();
                     reply(200, { ok: true });
                 } catch {
                     reply(400, { ok: false });
@@ -792,7 +814,7 @@ function startPlaytestServer() {
         });
     });
     srv.on('error', (err) => console.log(`[試玩] ⚠️ 開不了 port ${PLAYTEST_PORT}：${err.message}`));
-    srv.listen(PLAYTEST_PORT, '127.0.0.1', () => console.log(`[試玩] 西雅試玩作品用的通道已開（127.0.0.1:${PLAYTEST_PORT}）`));
+    srv.listen(PLAYTEST_PORT, '127.0.0.1', () => console.log(`[試玩] 試玩作品用的通道已開（127.0.0.1:${PLAYTEST_PORT}）`));
 }
 
 ipcMain.handle('youtube-login-status', () => isYouTubeLoggedIn());

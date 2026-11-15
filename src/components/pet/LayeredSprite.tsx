@@ -1,3 +1,4 @@
+import { fullName } from '../../persona';
 import React, { useEffect, useState } from 'react';
 import { voiceService } from '../../services/voiceService';
 import type { PetStateId } from './petStates';
@@ -289,7 +290,7 @@ const BodyImage: React.FC<{ src: string }> = ({ src }) => {
   return (
     <img
       src={shown}
-      alt="雙子星貓・西雅"
+      alt={fullName()}
       draggable={false}
       decoding="sync"
       className={layerClass}

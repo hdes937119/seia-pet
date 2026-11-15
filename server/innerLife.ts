@@ -24,6 +24,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { persona } from './personaPack';
 
 export type ObservationSource = 'screen' | 'gemini_web' | 'chat' | 'line' | 'explore' | 'own' | 'town';
 
@@ -39,16 +40,13 @@ const SOURCE_WEIGHT: Record<ObservationSource, number> = {
 };
 const SELF_SOURCES: ObservationSource[] = ['own', 'town'];
 
-/** 她的天性：決定她對什麼比較容易起興趣（不是設定好的興趣，只是傾向） */
-export const TEMPERAMENT =
-  '喜歡：星空和天文、宇宙航行、古老的機械和老東西、貓、奇怪的冷知識、甜點、亮晶晶或會發光的東西、有點神秘的傳說；' +
-  '沒興趣：下雨和潮濕、無聊的重複作業、太吵太擠的東西、純數字的財經消息';
+/** 她的天性：決定她對什麼比較容易起興趣（不是設定好的興趣，只是傾向）——11/15 起從人格包來（server/personaPack.ts） */
+export const TEMPERAMENT = persona().seed && !/^（/.test(persona().seed!.trim())
+  ? `${persona().temperament}。你是什麼樣的存在：${persona().seed}（其他性格在跟主人相處中慢慢長出來）`
+  : persona().temperament;
 
-/** 她隨便逛的時候，會從這些「完全隨機」的方向裡挑（跟主人無關） */
-export const CURIOSITY_POOL = [
-  '深海生物', '古代文明', '廢墟探險', '奇怪的發明', '太空站生活', '甜點的歷史', '世界各地的火車', '機械鐘錶',
-  '極光', '世界各地的貓', '天文攝影', '古地圖', '隕石', '燈塔', '自動人偶', '古代天文儀器', '螢火蟲', '奇怪的博物館',
-];
+/** 她隨便逛的時候，會從這些「完全隨機」的方向裡挑（跟主人無關）——人格包的 curiosityPool */
+export const CURIOSITY_POOL = persona().curiosityPool;
 
 interface Observation {
   at: number;

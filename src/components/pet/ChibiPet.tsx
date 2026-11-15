@@ -1,3 +1,4 @@
+import { titleOrName } from '../../persona';
 import React from 'react';
 import { BASE_SPRITE, PET_SPRITES, PET_STATES, type PetStateId, type SpriteAsset } from './petStates';
 import { PetAccessories, PetAura, PetParticles } from './PetEffects';
@@ -31,7 +32,7 @@ const SpriteImage: React.FC<{ asset?: SpriteAsset; filter?: string }> = ({ asset
       <div className="absolute inset-0 overflow-hidden" style={style}>
         <img
           src={src}
-          alt="雙子星貓"
+          alt={titleOrName()}
           draggable={false}
           className="h-full max-w-none select-none"
           style={{
@@ -45,7 +46,7 @@ const SpriteImage: React.FC<{ asset?: SpriteAsset; filter?: string }> = ({ asset
   return (
     <img
       src={src}
-      alt="雙子星貓"
+      alt={titleOrName()}
       draggable={false}
       className="absolute inset-0 w-full h-full object-contain select-none"
       style={style}

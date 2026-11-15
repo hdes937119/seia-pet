@@ -10,9 +10,11 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { deskName, inboxName, personaText } from './personaPack';
 
-export const DESK_NAME = '西雅的工作桌';
-const SUB = { works: '成品', commissions: '委託', research: '研究', inbox: '給西雅' } as const;
+/** 11/15 第 54 項：西雅＝「西雅的工作桌」「給西雅」；其他桌寵＝「工作桌」「給桌寵」（跟名字無關，見 personaPack.deskName） */
+export const DESK_NAME = deskName();
+const SUB = { works: '成品', commissions: '委託', research: '研究', inbox: inboxName() } as const;
 const SKIP_COMMISSION = new Set(['PLAN.md', 'HANDOFF.md', 'STEP_RESULT.md', 'TOOL.json']);
 const MAX_FILE = 20 * 1024 * 1024;
 const MAX_FILES = 200;
@@ -51,7 +53,7 @@ export function createDesk(projectRoot: string, dataDir: string, log: (m: string
       } catch {
         old = '';
       }
-      if (!old.includes('研究\\')) fs.writeFileSync(readme, '﻿' + README.replace(/\n/g, '\r\n'));
+      if (!old.includes('研究\\')) fs.writeFileSync(readme, '﻿' + personaText(README).replace(/\n/g, '\r\n'));
     } catch (err: any) {
       log(`[工作桌] 建立失敗：${err?.message}`);
     }
