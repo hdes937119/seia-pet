@@ -69,13 +69,11 @@ const SOURCE_OPTIONS: Array<[DiscoverySource, string]> = [
 ];
 
 const MODEL_OPTIONS: Array<[GeminiModelOption, string]> = [
-  ['gemini-3.1-pro-preview', '✨ Gemini 3.1 Pro（主力高階）'],
-  ['gemini-3.8-flash', '⚡ Gemini 3.8 Flash（最新多模態）'],
-  ['gemini-4-argon', '🔥 Gemini 4 Pro / Argon'],
-  ['auto', '🚀 自動智慧輪替（防限流）'],
-  ['gemini-3-flash-preview', '💨 Gemini 3.0 Flash'],
-  ['gemini-3.5-flash', '🌟 Gemini 3.5 Flash'],
-  ['gemini-3.1-flash-lite', '🍃 Gemini 3.1 Flash Lite'],
+  // 11/19：主力全部交給 Gemini 4 Hydrogen；另外兩個只在想手動換時用（自動模式下它們是救急的備援）
+  ['auto', '🚀 自動（Gemini 4 Hydrogen，忙線時自動換備援）'],
+  ['gemini-4-hydrogen', '💧 只用 Gemini 4 Hydrogen'],
+  ['gemini-3.8-flash', '⚡ Gemini 3.8 Flash'],
+  ['gemini-3.5-flash-lite', '🍃 Gemini 3.5 Flash-Lite（最省）'],
 ];
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = (props) => {

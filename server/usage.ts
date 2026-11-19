@@ -18,6 +18,11 @@ import { AsyncLocalStorage } from 'async_hooks';
 const PRICES: Array<{ match: RegExp; input: number; cached: number; output: number }> = [
   // 繪圖模型：輸出的圖片 token 很貴（Pro Image 1K 一張約 1120 token ≈ 0.13 美元；估算值）
   { match: /image/i, input: 2.0, cached: 0.2, output: 120.0 },
+  // 11/19：Gemini 4（官方價；Argon 12/1 起變兩倍，這裡先用漲價後的）
+  { match: /4-hydrogen/i, input: 1.5, cached: 0.075, output: 7.5 },
+  { match: /4-neon/i, input: 3.0, cached: 0.3, output: 15.0 },
+  { match: /4-(argon|carbon)/i, input: 4.0, cached: 0.4, output: 20.0 },
+  { match: /3\.5-flash-lite/i, input: 0.3, cached: 0.03, output: 2.5 },
   { match: /flash-lite/i, input: 0.25, cached: 0.025, output: 1.5 },
   { match: /3\.8-flash/i, input: 0.75, cached: 0.075, output: 3.75 },
   { match: /pro/i, input: 2.0, cached: 0.2, output: 12.0 },

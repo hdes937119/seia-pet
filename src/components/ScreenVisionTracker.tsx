@@ -83,7 +83,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
   isAutoTracking,
   onToggleAutoTracking,
   interruptSignal = 0,
-  preferredModel = 'gemini-3.1-pro-preview',
+  preferredModel = 'auto',
 }) => {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);

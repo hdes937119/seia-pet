@@ -222,9 +222,11 @@ export default function App() {
   const [preferredModel, setPreferredModel] = useState<GeminiModelOption>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_MODEL) as GeminiModelOption | null;
-      return saved || 'gemini-3.1-pro-preview';
+      // 11/19：以前存的舊模型（3.1 Pro、3 Flash…）一律改回自動＝Gemini 4 Hydrogen
+      const ok: string[] = ['auto', 'gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+      return saved && ok.includes(saved) ? saved : 'auto';
     } catch {
-      return 'gemini-3.1-pro-preview';
+      return 'auto';
     }
   });
 

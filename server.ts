@@ -169,11 +169,16 @@ const selfAware = createSelfAware({
 });
 
 // 西雅的工坊：隔離的 WSL2 裡的 DeepSeek Harness（見 server/workshop.ts、專案文件「西雅工坊」）
-const WORKSHOP_MODEL = process.env.WORKSHOP_MODEL || 'gemini-3.1-pro-preview';
-// 她自己「想」和「看」用的模型（決定做什麼、檢查成品）：次數少、最關鍵，預設用 Pro。.env 的 AUTONOMY_MODEL 可改
-const AUTONOMY_MODEL = process.env.AUTONOMY_MODEL || 'gemini-3.1-pro-preview';
-/** 打招呼、整點報時用的模型（11/5 主人選 Pro：Flash Lite 會自己編出沒發生過的事） */
-const GREETING_MODEL = process.env.GREETING_MODEL || 'gemini-3.1-pro-preview';
+// 11/19 主人決定：所有對話和判斷都交給 Gemini 4 Hydrogen（思考程度 low，見 thinkingConfigFor）。
+// .env 的 MAIN_MODEL 可以整個換掉；LITE_MODEL 是以前用 flash-lite 的輕量工作（挑背景資料、筆記、搜尋…），預設也是 MAIN_MODEL。
+// 畫圖（WARDROBE_MODEL）不在這裡：Hydrogen 只能輸出文字。
+const MAIN_MODEL = process.env.MAIN_MODEL || 'gemini-4-hydrogen';
+const LITE_MODEL = process.env.LITE_MODEL || MAIN_MODEL;
+const WORKSHOP_MODEL = process.env.WORKSHOP_MODEL || MAIN_MODEL;
+// 她自己「想」和「看」用的模型（決定做什麼、檢查成品）。.env 的 AUTONOMY_MODEL 可改
+const AUTONOMY_MODEL = process.env.AUTONOMY_MODEL || MAIN_MODEL;
+/** 打招呼、整點報時用的模型（11/5 主人選 Pro：Flash Lite 會自己編出沒發生過的事；11/19 改 Hydrogen） */
+const GREETING_MODEL = process.env.GREETING_MODEL || MAIN_MODEL;
 // 她自己看過不滿意時，最多重做幾次（重做不算成品數）
 const AUTONOMY_MAX_RETRY = Math.max(0, Number(process.env.AUTONOMY_MAX_RETRY ?? 1) || 0);
 // 主人給西雅的資料夾（她請求、主人同意；工坊工作時才唯讀掛進去），見 server/folders.ts
@@ -298,7 +303,7 @@ function scanOwnImages() {
           },
         ],
         { temperature: 0.3 },
-        'gemini-3.1-flash-lite-preview'
+        LITE_MODEL
       );
       const text = String(response.text || '').replace(/\s+/g, ' ').trim();
       return text ? text.slice(0, 120) : null;
@@ -319,7 +324,7 @@ function writebackChat(userText: string, reply: string) {
           ai,
           [{ role: 'user', parts: [{ text: prompt }] }],
           { responseMimeType: 'application/json', temperature: 0.1 },
-          'gemini-3.1-flash-lite-preview'
+          LITE_MODEL
         );
         return parseLooseJson(response.text || '{}');
       },
@@ -374,7 +379,7 @@ async function runDiary() {
           ai,
           [{ role: 'user', parts: [{ text: prompt }] }],
           { responseMimeType: 'application/json', temperature: 1.0 },
-          'gemini-3.1-flash-lite-preview'
+          LITE_MODEL
         );
         return parseLooseJson(response.text || '{}');
       }
@@ -466,7 +471,7 @@ async function planGoals(ai: GoogleGenAI) {
         },
       ],
       { responseMimeType: 'application/json', temperature: 1.0 },
-      'gemini-3.1-flash-lite-preview'
+      LITE_MODEL
     );
     const out = parseLooseJson(response.text || '{}');
     needs.setGoals(Array.isArray(out?.today) ? out.today : [], typeof out?.long === 'string' ? out.long : null);
@@ -500,7 +505,7 @@ ${describeMyRecentLines()}
       ai,
       [{ role: 'user', parts: [{ text: nudgePrompt }] }],
       { responseMimeType: 'application/json', temperature: 1.0 },
-      'gemini-3.1-flash-lite-preview'
+      LITE_MODEL
     );
     const out = parseLooseJson(response.text || '{}');
     const text = String(out?.text || '').trim().slice(0, 60);
@@ -584,7 +589,7 @@ function observe(source: ObservationSource, text: string) {
         ai,
         [{ role: 'user', parts: [{ text: prompt }] }],
         { responseMimeType: 'application/json', temperature: 0.2 },
-        'gemini-3.1-flash-lite-preview'
+        LITE_MODEL
       );
       return JSON.parse(cleanJsonText(response.text || '{}'));
     })
@@ -663,24 +668,30 @@ function isAbortError(err: any) {
   return err?.name === 'AbortError' || err?.name === 'APIUserAbortError';
 }
 
-const DEFAULT_CASCADE = [
+// 11/19：主力 Hydrogen；它回 503／被限流時才用後面兩個救急
+const DEFAULT_CASCADE = [...new Set([MAIN_MODEL, 'gemini-3.8-flash', 'gemini-3.5-flash-lite'])];
+
+/** 舊的模型選項（前端存過的偏好、以前寫死的模型）一律當成「自動」＝走主力模型 */
+const LEGACY_MODELS = new Set([
+  'gemini-3.1-pro-preview',
+  'gemini-3-pro-preview',
   'gemini-3-flash-preview',
   'gemini-3.1-flash-lite-preview',
   'gemini-3.5-flash',
-  'gemini-3.1-flash-lite',
-  'gemini-3.5-flash-lite',
-  'gemini-flash-lite-latest',
   'gemini-3.6-flash',
-];
+  'gemini-3.1-flash-lite',
+  'gemini-flash-lite-latest',
+  'gemini-4-argon',
+]);
+function normalizeModel(m?: string): string | null {
+  const t = String(m || '').trim();
+  if (!t || t === 'auto' || LEGACY_MODELS.has(t)) return null;
+  return t;
+}
 
-// 依偏好排出要嘗試的模型順序（Auto 模式時，優先用上次成功的預設池模型，避免被單次 Pro 任務鎖死）
+// 依偏好排出要嘗試的模型順序（沒指定＝主力模型開頭；冷卻中的會往後排）
 function modelsToTryFor(preferredModel?: string) {
-  const head =
-    preferredModel && preferredModel !== 'auto'
-      ? preferredModel
-      : lastWorkingModel && DEFAULT_CASCADE.includes(lastWorkingModel)
-        ? lastWorkingModel
-        : null;
+  const head = normalizeModel(preferredModel);
   const ordered = head ? [head, ...DEFAULT_CASCADE.filter((m) => m !== head)] : DEFAULT_CASCADE;
   const available = ordered.filter((m) => !missingModels.has(m));
   const now = Date.now();
@@ -701,6 +712,12 @@ const DEEP_CHAT_RE =
 const TASK_RE = /委託|工坊|工作桌|檔案|資料夾|專案|程式|改一下|修改|接著|繼續做|幫我做|做一個|做個|研究|安裝|配件|網頁|簡報|上一份|剛剛那個|進度/;
 let lastToolUseAt = 0;
 function chatModelFor(userText: string, preferredModel?: string, hasMedia = false): string {
+  // 11/19：聊天一律用主力模型（Hydrogen），不再自動升檔 Pro；主人在設定面板手動選了別的模型才照選的
+  const picked = normalizeModel(preferredModel);
+  return picked || MAIN_MODEL;
+}
+/** 11/19 以前的「快嘴 Flash + 難題升檔 Pro」路由，留著參考（現在沒有用到） */
+function legacyChatModelFor(userText: string, preferredModel?: string, hasMedia = false): string {
   if (preferredModel && preferredModel !== 'auto' && preferredModel !== 'gemini-3.1-pro-preview') {
     return preferredModel;
   }
@@ -720,14 +737,15 @@ function chatModelFor(userText: string, preferredModel?: string, hasMedia = fals
     console.log(`[雙腦路由] 跟做事有關（${recentTool ? '剛用過工具' : t.slice(0, 18)}…），前台自動升檔 ${AUTONOMY_MODEL}`);
     return AUTONOMY_MODEL;
   }
-  return 'gemini-3-flash-preview';
+  return MAIN_MODEL;
 }
+void legacyChatModelFor;
 
 /**
  * 回話前先挑材料（server/contextPicker.ts，11/6）：背景資料只帶這次真的接得上的 0～2 項，
  * 避免 Flash 每樣都用一點、拼湊成一團。.env 設 CONTEXT_PICK=false 可關掉（回到全部都帶）。
  */
-const PICK_MODEL = process.env.PICK_MODEL || 'gemini-3.1-flash-lite-preview';
+const PICK_MODEL = process.env.PICK_MODEL || LITE_MODEL;
 async function pickChatContext(
   ai: GoogleGenAI,
   blocks: Record<string, string>,
@@ -790,6 +808,7 @@ function noteModelError(model: string, err: any) {
 
 // 前台 Flash 與 Pro 一律開 LOW（Flash 開 LOW 只多花約 1 秒先打草稿檢查語境與主詞，大幅減少語用錯誤與看錯圖）；
 // 只有極輕量 flash-lite 用 MINIMAL；2.5 系列只吃 thinkingBudget。
+// 11/19：Gemini 4 Hydrogen 預設是 high（又慢又貴，思考的 token 算輸出價），這裡一律給 LOW。
 function thinkingConfigFor(model: string) {
   if (model.includes('2.5')) return { thinkingBudget: 0 };
   const isLite = model.includes('flash-lite');
@@ -2541,7 +2560,7 @@ autonomy.register({
 const research = createResearch(DATA_DIR, (msg) => console.log(msg));
 
 /* ===== 她的瀏覽器（server/browser.ts＋main.js 的 /browse 通道，11/6）：背景開著，用編號點、打字、捲動 ===== */
-const BROWSE_MODEL = process.env.BROWSE_MODEL || 'gemini-3-flash-preview';
+const BROWSE_MODEL = process.env.BROWSE_MODEL || MAIN_MODEL;
 const seiaBrowser = createBrowser({
   port: Number(process.env.PLAYTEST_PORT) || 3002,
   isPublicUrl: (u) => isPublicUrl(u),
@@ -2589,7 +2608,7 @@ async function onActionsDone(plan: ActionPlan) {
 }
 const RESEARCH_MAX_STEPS = Math.max(3, Number(process.env.RESEARCH_MAX_STEPS) || 10);
 const RESEARCH_DAILY_CYCLES = Math.max(1, Number(process.env.RESEARCH_DAILY_CYCLES) || 4);
-const RESEARCH_SEARCH_MODEL = process.env.RESEARCH_SEARCH_MODEL || 'gemini-3.1-flash-lite-preview';
+const RESEARCH_SEARCH_MODEL = process.env.RESEARCH_SEARCH_MODEL || LITE_MODEL;
 let researchRunning: string | null = null;
 /** 今天研究了幾輪（每輪結束都會記一筆 cycle，重開也算得到） */
 const researchCyclesToday = () => research.cyclesOn(researchDayKey(Date.now()));
@@ -3252,7 +3271,7 @@ ${workshop.entrySource(w, 4000)}`,
   }
 }
 
-const NOTE_MODEL = process.env.RESEARCH_NOTE_MODEL || 'gemini-3.1-flash-lite-preview';
+const NOTE_MODEL = process.env.RESEARCH_NOTE_MODEL || LITE_MODEL;
 const statusLabel = (st: string) => ({ active: '進行中', paused: '暫停', done: '做完了', dropped: '放下了' } as Record<string, string>)[st] || st;
 
 /** 整理筆記（A-MEM 式）：關鍵字（含換句話說）、標籤、重要程度、連到舊筆記。一次最多 max 條，舊的先 */
@@ -4856,7 +4875,7 @@ ${past ? `你以前做過：${past}（不要做一樣的）` : ''}
     ai,
     [{ role: 'user', parts: [{ text: prompt }] }],
     { responseMimeType: 'application/json', temperature: masterIdea ? 0.5 : 1.0 },
-    'gemini-3.1-flash-lite-preview'
+    LITE_MODEL
   );
   const out = parseLooseJson(response.text || '{}');
   const title = String(out?.title || '').trim();
@@ -4941,7 +4960,7 @@ ${errs || '（沒有）'}
 }
 
 /** 技能庫（借 Voyager）：從做成功、試玩檢查過的作品拆出可以重複使用的小零件 */
-const SKILL_MODEL = process.env.SKILL_MODEL || 'gemini-3-flash-preview';
+const SKILL_MODEL = process.env.SKILL_MODEL || MAIN_MODEL;
 async function extractSkills(w: Work, seen: string, opts: { master?: boolean } = {}) {
   const ai = getAiClient();
   if (!ai) return;
@@ -5209,7 +5228,7 @@ ${String(w.error || '').slice(0, 600)}
             },
           ],
           { responseMimeType: 'application/json', temperature: 0.6 },
-          'gemini-3.1-flash-lite-preview'
+          LITE_MODEL
         )
       );
       const out = parseLooseJson(response.text || '{}');
@@ -5442,7 +5461,7 @@ app.post('/api/auto-explore', async (req: Request, res: Response) => {
       [{ role: 'user', parts: [{ text: prompt }] }],
       { responseMimeType: 'application/json', temperature: opts?.temperature ?? 0.9 },
       // 規劃關鍵字用最快的模型；挑文章、寫短評用主人選的模型
-      opts?.fast ? 'gemini-3.1-flash-lite-preview' : preferredModel
+      opts?.fast ? LITE_MODEL : preferredModel
     );
     return JSON.parse(cleanJsonText(response.text || '{}'));
   };
@@ -5916,7 +5935,7 @@ async function maybeCreateNickname(ai: GoogleGenAI) {
           },
         ],
         { responseMimeType: 'application/json', temperature: 1.0 },
-        'gemini-3.1-flash-lite-preview'
+        LITE_MODEL
       );
       const candidate = String(JSON.parse(cleanJsonText(response.text || '{}'))?.nickname || '').trim();
       const refusedHit = refusedList.some((r) => candidate.includes(r) || r.includes(candidate));
@@ -6227,7 +6246,7 @@ ${String(context || '').slice(0, 12000)}`,
         },
       ],
       { responseMimeType: 'application/json', temperature: 0 },
-      'gemini-3-flash-preview'
+      MAIN_MODEL
     );
     const out = parseLooseJson(response.text || '{}');
     if (out?.fabricated === true) return { ok: false, reason: `說了背景資料裡沒有的事（${String(out.what || '').slice(0, 40)}）` };
@@ -6521,7 +6540,7 @@ app.post('/api/transcribe', async (req: Request, res: Response) => {
       ],
       { temperature: 0 },
       // 轉寫不需要聊天用的大模型，優先用最快的 Flash Lite（不能用時才輪替其他模型）
-      'gemini-3.1-flash-lite-preview',
+      LITE_MODEL,
       abort.signal
     );
 
@@ -6712,7 +6731,7 @@ ${relationship.describe()}
         },
       ],
       { responseMimeType: 'application/json', temperature: 0.9 },
-      'gemini-3.1-flash-lite-preview'
+      LITE_MODEL
     );
     const text = String(JSON.parse(cleanJsonText(response.text || '{}'))?.text || '').trim();
     return text || fallback;
