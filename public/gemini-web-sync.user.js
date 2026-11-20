@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         哈基米桌寵：Gemini 網頁對話連動
 // @namespace    gemini-desktop-pet
-// @version      1.0
+// @version      1.1
 // @description  你在 Gemini 網頁版每問完一題，就把「問題＋回答」傳給自己電腦上的桌寵（只傳到 127.0.0.1，不會傳到別的地方）
 // @match        https://gemini.google.com/*
 // @grant        GM_xmlhttpRequest
@@ -37,7 +37,8 @@
     const out = [];
     for (let i = 0; i < n; i++) {
       out.push({
-        q: textOf(qs[i].querySelector(SEL.questionText) || qs[i]),
+        // 1.1（11/20）：去掉 Gemini 給螢幕閱讀器的「你說了 / You said」
+        q: textOf(qs[i].querySelector(SEL.questionText) || qs[i]).replace(/^\s*(你說了|您說了|你说了|You said)\s*[:：]?\s*/i, ''),
         a: textOf(as[i].querySelector(SEL.answerText) || as[i]),
       });
     }

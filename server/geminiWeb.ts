@@ -6,6 +6,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { QUESTION_PREFIX_RE } from './geminiArchive';
 
 export interface GeminiWebItem {
   question: string;
@@ -34,6 +35,8 @@ export function createGeminiWebStore(dataDir: string) {
   } catch {
     items = [];
   }
+  // 11/20：以前收到的問題前面多了 Gemini 網頁給螢幕閱讀器的「你說了」，讀進來時順便去掉
+  items = items.map((x) => ({ ...x, question: String(x.question || '').replace(QUESTION_PREFIX_RE, '') }));
   let timer: NodeJS.Timeout | null = null;
   const save = () => {
     if (timer) clearTimeout(timer);
@@ -50,7 +53,7 @@ export function createGeminiWebStore(dataDir: string) {
   return {
     /** 收到一組問答；同一題重複送來（重新整理頁面）就忽略。回傳新加入的那一筆 */
     add(question: unknown, answer: unknown): GeminiWebItem | null {
-      const q = clean(question, Q_MAX);
+      const q = clean(String(question ?? '').replace(QUESTION_PREFIX_RE, ''), Q_MAX);
       const a = clean(answer, A_MAX);
       if (!q || !a) return null;
       if (items.some((x) => x.question === q && x.answer.slice(0, 80) === a.slice(0, 80))) return null;

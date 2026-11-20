@@ -19,6 +19,7 @@ import { createEventMemory, isOverduePlan, type MemoryEvent } from './server/eve
 import { createRelationship, LEVELS } from './server/relationship';
 import { createLineStore, lineApi, lineConfig, verifySignature, type LineConfig, type LineMessage } from './server/line';
 import { createGeminiWebStore, describeGeminiWeb, type GeminiWebItem } from './server/geminiWeb';
+import { createGeminiArchive } from './server/geminiArchive';
 import { createInnerLife, CURIOSITY_POOL, TEMPERAMENT, type ObservationSource } from './server/innerLife';
 import { createNeeds } from './server/needs';
 import { tonightEvent, upcomingEvent } from './server/sky';
@@ -151,6 +152,8 @@ const relationship = createRelationship(DATA_DIR);
 // LINE 連動的狀態（綁定的主人、LINE 對話紀錄、推播額度…），存在 data/line/state.json
 const lineStore = createLineStore(DATA_DIR);
 const geminiWebStore = createGeminiWebStore(DATA_DIR);
+// 11/20：Gemini 舊紀錄（Google 匯出的 MyActivity.json 放進工作桌「給西雅」→ 自動讀進來）
+const geminiArchive = createGeminiArchive(DATA_DIR, (m) => console.log(m));
 // 她的內在生活：觀察日誌 → 興趣自然湧現（見 server/innerLife.ts）
 const innerLife = createInnerLife(DATA_DIR);
 // 體力與晝夜節律（見 server/stamina.ts）
@@ -1212,6 +1215,7 @@ function buildSystemPrompt(
     以前聊過: recall.describeForChat(String(recentText || '').split('\n').pop() || ''),
     往事: eventContext ? `${eventContext}\n（以上是你記得的主人往事。只能根據這些內容提起往事，不要捏造沒發生過的事。）` : '',
     Gemini網頁: describeGeminiWeb(geminiWebStore),
+    問過Gemini: geminiArchive.describeForChat(String(recentText || '').split('\n').pop() || ''),
     興趣: innerLife.describeForChat(),
     河木鎮: worldEnabled() ? world.describeForChat() : '',
     // 11/15 第 55 項：公開版的世界設定（使用者自己寫的 lorebook；西雅沒有）
@@ -2124,6 +2128,32 @@ async function commentOnGeminiWeb(item: GeminiWebItem) {
     console.warn('[Gemini 網頁] 吐槽失敗：', err?.status || err?.message);
   }
 }
+
+/** 11/20：看工作桌「給西雅」有沒有新的 Gemini 匯出檔；有就讀進來，再請模型整理一次主題 */
+async function checkGeminiImport() {
+  try {
+    const r = geminiArchive.scan(desk.inboxDir());
+    if (r.files.length) console.log(`[Gemini 舊紀錄] 這次讀了 ${r.files.join('、')}，新加 ${r.added} 題（共 ${geminiArchive.stats().items} 題）`);
+    if (!geminiArchive.needsSummary()) return;
+    const ai = getAiClient();
+    if (!ai) return;
+    await usageTask('gemini-import', async () => {
+      const { response } = await generateSmartContent(ai, [{ role: 'user', parts: [{ text: geminiArchive.summaryPrompt() }] }], { temperature: 0.3 }, MAIN_MODEL);
+      const text = String(response.text || '').trim();
+      if (text) {
+        geminiArchive.setSummary(text);
+        console.log(`[Gemini 舊紀錄] 主題整理好了：${geminiArchive.stats().summary.slice(0, 120)}`);
+      }
+    });
+  } catch (err: any) {
+    console.warn('[Gemini 舊紀錄] 匯入失敗：', err?.message);
+  }
+}
+// 除錯用：瀏覽器打開 http://127.0.0.1:3000/api/gemini-archive 看讀了多少；?scan=1 立刻再找一次
+app.get('/api/gemini-archive', async (req: Request, res: Response) => {
+  if (req.query.scan) await checkGeminiImport();
+  res.json(geminiArchive.stats());
+});
 
 app.post('/api/gemini-web/ingest', (req: Request, res: Response) => {
   if (req.get('x-gemini-pet') !== '1') return res.status(403).json({ error: 'forbidden' });
@@ -7191,6 +7221,9 @@ async function startServer() {
   // 河木鎮：開機 1.5 分鐘後補算關機期間的事，之後每 20 分鐘看一次要不要寫（大約每 4 小時寫一次，深夜不寫）
   setTimeout(() => void runNarrator(), 90_000);
   setInterval(() => void runNarrator(), 20 * 60 * 1000);
+  // 11/20：Gemini 舊紀錄（給西雅裡的匯出檔）：開機 40 秒後看一次，之後每 10 分鐘
+  setTimeout(() => void checkGeminiImport(), 40_000);
+  setInterval(() => void checkGeminiImport(), 10 * 60 * 1000);
   // 寂寞又被晾著就主動找主人（每 10 分鐘看一次）
   setInterval(() => void usageTask('nudge', () => maybeNudge()), 10 * 60 * 1000);
   // 日記：23 點後寫今天的；早上補寫昨天的（每 20 分鐘看一次）

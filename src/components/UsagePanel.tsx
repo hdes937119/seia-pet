@@ -43,6 +43,7 @@ const TASK_LABEL: Record<string, string> = {
   explore: '探索（你按的）',
   'explore-idle': '她自己閒逛',
   narrator: '河木鎮說書人',
+  'gemini-import': '整理 Gemini 舊紀錄',
   goals: '今天的目標',
   nudge: '主動搭話',
   writeback: '整理鎮上設定',
