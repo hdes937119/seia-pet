@@ -26,6 +26,11 @@ export interface Thread {
   usedAt?: number;
   /** 來源原話編號（stream.jsonl 的 seq） */
   sourceSeqs?: number[];
+  /** 11/21：主題標籤（2～6 字，例如「開會」「煮麵」），用來跟主人這句話比對 */
+  topic?: string;
+  /** 11/21：這件事的時間（絕對時間，毫秒；有幾點的話 hasTime=true）。給她看時才換成「今天／明天／3 天前」 */
+  due?: number;
+  hasTime?: boolean;
 }
 
 export interface FollowUp {
@@ -69,6 +74,24 @@ function bigrams(t: string) {
   const out = new Set<string>();
   for (let i = 0; i < c.length - 1; i++) out.add(c.slice(i, i + 2));
   return out;
+}
+/** 「2026-11-22 11:00」「2026-11-22」→ 毫秒（看不懂就 null） */
+function parseDue(v: unknown): { at: number; hasTime: boolean } | null {
+  const m = String(v ?? '').trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?$/);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), m[4] ? Number(m[4]) : 12, m[5] ? Number(m[5]) : 0);
+  return Number.isFinite(d.getTime()) ? { at: d.getTime(), hasTime: Boolean(m[4]) } : null;
+}
+/** 給她看的相對時間：今天 11:00、明天、3 天前… */
+function relDue(at: number, hasTime: boolean | undefined, now = Date.now()): string {
+  const day = (ms: number) => {
+    const d = new Date(ms);
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  };
+  const diff = Math.round((day(at) - day(now)) / 86_400_000);
+  const d = new Date(at);
+  const word = diff === 0 ? '今天' : diff === 1 ? '明天' : diff === -1 ? '昨天' : diff === 2 ? '後天' : diff > 0 ? `${diff} 天後` : `${-diff} 天前`;
+  return `${word}（${d.getMonth() + 1}/${d.getDate()}${hasTime ? ` ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : ''}）`;
 }
 function overlap(a: string, b: string) {
   const x = bigrams(a);
@@ -151,15 +174,32 @@ export function createThreads(dataDir: string, deps: ThreadsDeps) {
     save();
   }
 
-  /** 給聊天提示詞 */
-  function describeForChat(now = Date.now(), opts?: { withIds?: boolean }): string {
+  /**
+   * 11/21：挑話頭——先挑跟主人這句話接得上的（主題標籤或內容重疊），再補分數高的，最多 3 個。
+   * 話頭存的是中性的事實（不是台詞），她要用自己的話說。
+   */
+  function pick(userText: string, now = Date.now(), max = 3): Thread[] {
+    const all = open(now);
+    const u = String(userText || '');
+    if (!u.trim()) return all.slice(0, max);
+    const rel = (t: Thread) => Math.max(overlap(`${t.topic || ''}${t.text}`, u), t.topic && u.includes(t.topic) ? 1 : 0);
+    const related = all.filter((t) => rel(t) >= 0.25).sort((a, b) => rel(b) + b.score - (rel(a) + a.score));
+    return [...related, ...all.filter((t) => !related.includes(t))].slice(0, max);
+  }
+
+  /** 給聊天提示詞（userText＝主人最新一句，用來挑接得上的話頭） */
+  function describeForChat(now = Date.now(), opts?: { withIds?: boolean }, userText = ''): string {
     const parts: string[] = [];
     const withIds = Boolean(opts?.withIds);
     if (st.summary && now - st.summaryAt < SUMMARY_STALE_MS) parts.push(`【這段對話到目前為止】${st.summary}`);
-    const top = open(now).slice(0, 3);
+    const top = pick(userText, now);
     if (top.length) {
       const label: Record<Thread['kind'], string> = { ask: '你問了還沒得到回答', followup: '可以問後續', plan: '你們約好的事', mine: '你自己好奇' };
-      parts.push(`【可以接回來的話頭】\n${top.map((t) => `- ${withIds ? `[${t.id}] ` : ''}${t.text}（${label[t.kind]}）`).join('\n')}`);
+      parts.push(
+        `【可以接回來的話頭】（這是筆記，不是台詞；要提的話用你自己的話說）\n${top
+          .map((t) => `- ${withIds ? `[${t.id}] ` : ''}${t.topic ? `〔${t.topic}〕` : ''}${t.text}${t.due ? `｜時間：${relDue(t.due, t.hasTime, now)}` : ''}（${label[t.kind]}）`)
+          .join('\n')}`
+      );
     }
     const ab = askedBlock(now);
     if (ab) parts.push(ab);
@@ -176,12 +216,15 @@ export function createThreads(dataDir: string, deps: ThreadsDeps) {
   function prompt(lines: ChatLine[], persona: string) {
     const fmt = (l: ChatLine) =>
       `${l.seq ? `[#${l.seq}] ` : ''}${l.role === 'user' ? '主人' : '西雅'}${l.source === 'line' ? '（LINE）' : ''}：${String(l.text).replace(/\[\[NEXT\]\]/g, ' / ').slice(0, 300)}`;
+    const nowD = new Date();
+    const nowStr = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')} ${String(nowD.getHours()).padStart(2, '0')}:${String(nowD.getMinutes()).padStart(2, '0')}（星期${'日一二三四五六'[nowD.getDay()]}）`;
     return `你是貓娘「西雅」的內心。剛剛她和主人聊了下面這段，請在心裡回想一次，整理成筆記。
 ${persona}
+【現在時間】${nowStr}
 
 【之前的摘要】${st.summary || '（沒有）'}
 【之前記下的話頭】
-${open().map((t) => `${t.id}｜${t.kind}｜${t.text}`).join('\n') || '（沒有）'}
+${open().map((t) => `${t.id}｜${t.kind}｜${t.topic ? `〔${t.topic}〕` : ''}${t.text}`).join('\n') || '（沒有）'}
 【她最近問過主人的】${st.asked.slice(-5).map((a) => a.text).join('；') || '（沒有）'}
 
 【最近的對話（舊→新）】
@@ -189,7 +232,11 @@ ${lines.map(fmt).join('\n')}
 
 請輸出：
 1. summary：這段對話到目前為止的重點（80～160 字）：在聊什麼、已經講定或主人回答了什麼、主人現在的狀態和心情。只寫對話裡真的有的。
-2. add：新的「之後值得接回來的話頭」，最多 2 個，每個 30 字內，只能根據對話裡真的出現的內容，並附上 sourceSeqs（來自【最近的對話】哪幾句的 #編號，例如 [120, 121]）：
+2. add：新的「之後值得接回來的話頭」，最多 2 個，只能根據對話裡真的出現的內容，並附上 sourceSeqs（來自【最近的對話】哪幾句的 #編號，例如 [120, 121]）。每個話頭是一則「筆記」不是台詞：
+   - text：30 字內，用中性的說法寫「發生什麼事｜她想做什麼」，例如「主人週日 11:00 在碧英大樓開會｜想問：有沒有撐住」。不要寫成她要說的話，不要加「喵」、語氣詞或表情。
+   - topic：2～6 字的主題標籤，例如「開會」「煮麵」「POE 開荒」。
+   - due：這件事有明確日期或時間的話，換算成絕對時間「YYYY-MM-DD HH:mm」（只有日期就「YYYY-MM-DD」），用上面的【現在時間】換算「明天、今晚、週日」；沒有就 null。
+   kind 有這幾種：
    - ask：她問了主人、主人還沒回答（主人已經回答的不要）
    - plan：兩人約好或說好「下次」要做的事
    （主人提到之後會有結果的事——考試、比賽、身體不舒服、在等東西——另外有「事件記憶」會記、到時候提醒她問，這裡不要記）
@@ -199,7 +246,7 @@ ${lines.map(fmt).join('\n')}
 4. followUp：如果主人現在安靜下來，她過一會兒會自己補一句什麼嗎？（像朋友過幾分鐘又想到「對了，剛剛…」）
    要嘛是 null，要嘛是 { "text": "25 字內、用她的口吻", "score": 0～1, "waitSec": 90～600, "sourceSeqs": [根據哪幾句 #編號] }。
    對話已經自然結束（道晚安、說要去忙、主人說等等再聊）、或沒有真的值得說的，就給 null。不要問「她最近問過主人的」一樣的事。
-只輸出一份 JSON：{ "summary": "…", "add": [{ "text": "…", "kind": "plan", "score": 0.6, "sourceSeqs": [120] }], "close": ["t-…"], "followUp": null }`;
+只輸出一份 JSON：{ "summary": "…", "add": [{ "text": "…", "topic": "…", "due": null, "kind": "plan", "score": 0.6, "sourceSeqs": [120] }], "close": ["t-…"], "followUp": null }`;
   }
 
   /** 聊完之後在背景呼叫（不用等） */
@@ -225,7 +272,11 @@ ${lines.map(fmt).join('\n')}
         const kind = ['ask', 'plan', 'mine'].includes(a?.kind) ? a.kind : 'mine';
         if (!text || open().some((t) => overlap(t.text, text) >= 0.5)) continue;
         const seqs = cleanSeqs(a?.sourceSeqs, 6).filter((s) => !validSeqMap.size || validSeqMap.has(s));
+        const topic = String(a?.topic || '').replace(/[〔〕\[\]]/g, '').trim().slice(0, 8);
+        const due = parseDue(a?.due);
         st.threads.push({
+          ...(topic ? { topic } : {}),
+          ...(due ? { due: due.at, hasTime: due.hasTime } : {}),
           id: uid(),
           text,
           kind,

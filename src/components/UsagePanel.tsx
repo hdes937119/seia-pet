@@ -19,6 +19,10 @@ interface UsageSummary {
   todayTwd: number;
   monthTwd: number;
   overBudget: boolean;
+  /** 11/21：每月上限、全天總上限、現在是不是到上限了（month／day） */
+  monthBudgetTwd?: number;
+  dayTotalBudgetTwd?: number;
+  capped?: 'month' | 'day' | null;
   cacheHitRate: number | null;
   ttftMedianMs: number | null;
   tasks: TaskRow[];
@@ -111,8 +115,12 @@ export const UsagePanel: React.FC = () => {
         <div className={`h-full ${data.overBudget ? 'bg-red-400' : 'bg-purple-400'}`} style={{ width: `${pct}%` }} />
       </div>
       <p className="text-[10px] text-slate-400">
-        本月約 NT${data.monthTwd.toFixed(0)}・快取命中 {data.cacheHitRate ?? '—'}%・回覆首字 {data.ttftMedianMs ? `${(data.ttftMedianMs / 1000).toFixed(1)} 秒` : '—'}
-        {data.overBudget ? '・超過預算：背景任務休息中（聊天不受影響）' : ''}
+        本月約 NT${data.monthTwd.toFixed(0)}{data.monthBudgetTwd ? ` / ${data.monthBudgetTwd}` : ''}{data.dayTotalBudgetTwd ? `・全天上限 ${data.dayTotalBudgetTwd}` : ''}・快取命中 {data.cacheHitRate ?? '—'}%・回覆首字 {data.ttftMedianMs ? `${(data.ttftMedianMs / 1000).toFixed(1)} 秒` : '—'}
+        {data.capped
+          ? `・${data.capped === 'month' ? '這個月' : '今天'}到總上限：背景和看螢幕暫停，聊天改用省錢模型`
+          : data.overBudget
+          ? '・超過背景預算：背景任務休息中（聊天不受影響）'
+          : ''}
       </p>
       <div className="space-y-0.5">
         {data.tasks.slice(0, 8).map((t) => (

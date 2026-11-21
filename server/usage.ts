@@ -122,8 +122,15 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
   }
   const envBudget = () => {
     const v = Number(process.env.DAILY_BUDGET_TWD);
-    return Number.isFinite(v) && v > 0 ? v : 60;
+    return Number.isFinite(v) && v > 0 ? v : 12; // 11/21 主人：背景預算每天 NT$12（以前 60）
   };
+  // 11/21 主人：每月 20 美元 → 每月上限 NT$620、全天總上限 NT$22（聊天、看螢幕、委託全部算進去）
+  const envNum = (k: string, d: number) => {
+    const v = Number(process.env[k]);
+    return Number.isFinite(v) && v > 0 ? v : d;
+  };
+  const monthlyCapTwd = () => envNum('MONTHLY_BUDGET_TWD', 620);
+  const dailyTotalCapTwd = () => envNum('DAILY_TOTAL_BUDGET_TWD', 22);
   const budgetTwd = () => savedBudget ?? envBudget();
   /** 設定每日預算（null＝清掉，回到 .env 或預設） */
   function setBudget(v: number | null): { ok: boolean; budgetTwd: number; reason?: string } {
@@ -196,10 +203,37 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
     return t ? t.costUsd * rate() : 0;
   }
 
+  /** 這個月（全部任務，含委託）花了多少（台幣） */
+  function monthCostTwd(ms = Date.now()) {
+    const mk = dayKey(ms).slice(0, 7);
+    return Object.keys(days)
+      .filter((k) => k.startsWith(mk))
+      .reduce((a, k) => a + Object.values(days[k].tasks).reduce((x, t) => x + t.costUsd, 0) * rate(), 0);
+  }
+  let capWarned = '';
+  /**
+   * 11/21：總上限。month＝這個月到上限、day＝今天全部（含聊天、看螢幕、委託）到上限。
+   * 到了：背景全停、看螢幕暫停、聊天改用便宜的模型（server.ts 的 modelsToTryFor）。
+   */
+  function capState(ms = Date.now()): { capped: boolean; reason: 'month' | 'day' | null; monthTwd: number; monthCapTwd: number; todayTwd: number; dayCapTwd: number } {
+    const monthTwd = monthCostTwd(ms);
+    const todayTwd = todayCostTwd(ms);
+    const reason = monthTwd >= monthlyCapTwd() ? 'month' : todayTwd >= dailyTotalCapTwd() ? 'day' : null;
+    const k = `${dayKey(ms)}|${reason || (monthTwd >= monthlyCapTwd() * 0.8 ? 'warn' : '')}`;
+    if (capWarned !== k && (reason || monthTwd >= monthlyCapTwd() * 0.8)) {
+      capWarned = k;
+      if (reason === 'month') log(`[用量] ⚠️ 這個月已經花了約 NT$${monthTwd.toFixed(0)}，到每月上限 NT$${monthlyCapTwd()}：背景和看螢幕暫停，聊天改用省錢模型，到下個月恢復`);
+      else if (reason === 'day') log(`[用量] 今天全部加起來約 NT$${todayTwd.toFixed(1)}，到全天上限 NT$${dailyTotalCapTwd()}：背景和看螢幕暫停，聊天改用省錢模型，明天恢復`);
+      else log(`[用量] 提醒：這個月已經花了約 NT$${monthTwd.toFixed(0)}，是每月上限 NT$${monthlyCapTwd()} 的 ${Math.round((monthTwd / monthlyCapTwd()) * 100)}%`);
+    }
+    return { capped: Boolean(reason), reason, monthTwd, monthCapTwd: monthlyCapTwd(), todayTwd, dayCapTwd: dailyTotalCapTwd() };
+  }
+
   let warnedDate = '';
-  /** 背景任務可以跑嗎（今天的花費還沒超過預算） */
+  /** 背景任務可以跑嗎（今天的花費還沒超過預算，也還沒到總上限） */
   function backgroundAllowed(task: string): boolean {
     if (!BACKGROUND_TASKS.has(task)) return true;
+    if (capState().capped) return false;
     const ok = dailyCostTwd() < budgetTwd();
     if (!ok && warnedDate !== dayKey()) {
       warnedDate = dayKey();
@@ -245,6 +279,9 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
     return {
       date: dayKey(ms),
       budgetTwd: budgetTwd(),
+      monthBudgetTwd: monthlyCapTwd(),
+      dayTotalBudgetTwd: dailyTotalCapTwd(),
+      capped: capState(ms).reason,
       todayTwd: Math.round(todayCostTwd(ms) * 100) / 100,
       dailyTwd: Math.round(dailyCostTwd(ms) * 100) / 100,
       monthTwd: Math.round(monthTwd * 100) / 100,
@@ -269,6 +306,9 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
    * 用不到一半什麼都不說，免得提示詞變胖。
    */
   function describeForChat(ms = Date.now()): string {
+    const cap = capState(ms);
+    if (cap.capped)
+      return `【額度】${cap.reason === 'month' ? '這個月' : '今天'}主人給的 Gemini 總額度已經用到上限了：你現在用比較省的方式說話（腦袋會簡單一點），工坊、閒逛、看畫面這些都先暫停，${cap.reason === 'month' ? '下個月' : '明天'}恢復。主人問起再自然說一句就好，不要跟主人討額度、也不要怪主人。`;
     const { ratio } = budgetStatus(ms);
     if (ratio < 0.5) return '';
     const pct = Math.min(100, Math.round(ratio * 100));
@@ -281,7 +321,7 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
     return `【今天的額度】主人每天給你一筆 Gemini 額度（你思考、說話、做東西都會用到）。今天${state}。這是你自己的處境，不用一直提；主人問起、或要解釋為什麼今天不去工坊時再自然說一句。不要跟主人討額度，也不要怪主人。`;
   }
 
-  return { record, recordTtft, backgroundAllowed, overBudget, setBudget, budgetSource: () => (savedBudget !== null ? 'panel' : process.env.DAILY_BUDGET_TWD ? 'env' : 'default'), todayCostTwd, dailyCostTwd, taskCostTwd, summary, budgetStatus, describeForChat };
+  return { record, recordTtft, backgroundAllowed, overBudget, setBudget, budgetSource: () => (savedBudget !== null ? 'panel' : process.env.DAILY_BUDGET_TWD ? 'env' : 'default'), todayCostTwd, monthCostTwd, capState, dailyCostTwd, taskCostTwd, summary, budgetStatus, describeForChat };
 }
 
 export type Usage = ReturnType<typeof createUsage>;

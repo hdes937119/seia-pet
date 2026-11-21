@@ -40,7 +40,7 @@ import {
   createPromptMeter,
   DYNAMIC_MARK,
 } from './server/promptBudget';
-import { createUsage, usageTask } from './server/usage';
+import { createUsage, usageTask, currentTask } from './server/usage';
 import { createWorkshop, type Work } from './server/workshop';
 import { createSelfAccess, type SelfEdit } from './server/selfAccess';
 import { createFolders } from './server/folders';
@@ -176,12 +176,17 @@ const selfAware = createSelfAware({
 // .env 的 MAIN_MODEL 可以整個換掉；LITE_MODEL 是以前用 flash-lite 的輕量工作（挑背景資料、筆記、搜尋…），預設也是 MAIN_MODEL。
 // 畫圖（WARDROBE_MODEL）不在這裡：Hydrogen 只能輸出文字。
 const MAIN_MODEL = process.env.MAIN_MODEL || 'gemini-4-hydrogen';
-const LITE_MODEL = process.env.LITE_MODEL || MAIN_MODEL;
+// 11/21 主人（每月 20 美元）：聊天、LINE、工坊、話頭、委託、主人按的探索用 MAIN_MODEL；其他背景和看螢幕用 BG_MODEL。
+// 真正的分配在 routeModel（看目前的任務名稱），所以下面這些常數只是預設值。
+const BG_MODEL = process.env.BG_MODEL || 'gemini-3.5-flash-lite';
+const LITE_MODEL = process.env.LITE_MODEL || BG_MODEL;
 const WORKSHOP_MODEL = process.env.WORKSHOP_MODEL || MAIN_MODEL;
 // 她自己「想」和「看」用的模型（決定做什麼、檢查成品）。.env 的 AUTONOMY_MODEL 可改
-const AUTONOMY_MODEL = process.env.AUTONOMY_MODEL || MAIN_MODEL;
-/** 打招呼、整點報時用的模型（11/5 主人選 Pro：Flash Lite 會自己編出沒發生過的事；11/19 改 Hydrogen） */
-const GREETING_MODEL = process.env.GREETING_MODEL || MAIN_MODEL;
+const AUTONOMY_MODEL = process.env.AUTONOMY_MODEL || BG_MODEL;
+/** 打招呼、整點報時用的模型（11/5 主人選 Pro；11/19 改 Hydrogen；11/21 改 BG_MODEL 省錢） */
+const GREETING_MODEL = process.env.GREETING_MODEL || BG_MODEL;
+/** 用 MAIN_MODEL 的任務（usage 的任務名稱）；其他任務一律 BG_MODEL */
+const MAIN_TASK_RE = /^(chat|line|workshop|threads|explore|commission(:.*)?)$/;
 // 她自己看過不滿意時，最多重做幾次（重做不算成品數）
 const AUTONOMY_MAX_RETRY = Math.max(0, Number(process.env.AUTONOMY_MAX_RETRY ?? 1) || 0);
 // 主人給西雅的資料夾（她請求、主人同意；工坊工作時才唯讀掛進去），見 server/folders.ts
@@ -692,10 +697,34 @@ function normalizeModel(m?: string): string | null {
   return t;
 }
 
+/**
+ * 11/21：依目前的任務決定模型（所有 Gemini 文字呼叫都經過 modelsToTryFor，所以只要改這裡）
+ *  - 到了每月／全天總上限：一律 BG_MODEL（聊天還能回，只是簡單一點）
+ *  - MAIN_TASK_RE 的任務：照呼叫的人指定的（沒指定＝MAIN_MODEL；主人在設定面板手動選的模型也照用）
+ *  - 其他（背景、看螢幕、打招呼…）：BG_MODEL
+ */
+function routeModel(preferredModel?: string): string | null {
+  try {
+    if (usage.capState().capped) return BG_MODEL;
+  } catch {
+    // usage 還沒建好（開機最早期）就照原本的
+  }
+  const task = currentTask();
+  if (MAIN_TASK_RE.test(task)) {
+    const picked = normalizeModel(preferredModel);
+    // 聊天、LINE：主人在設定面板選什麼就用什麼；工坊、話頭、委託、探索：程式裡寫的省錢模型（AUTONOMY_MODEL…）一律換回主力
+    if (picked === BG_MODEL && task !== 'chat' && task !== 'line') return null;
+    return picked;
+  }
+  return BG_MODEL;
+}
+
 // 依偏好排出要嘗試的模型順序（沒指定＝主力模型開頭；冷卻中的會往後排）
 function modelsToTryFor(preferredModel?: string) {
-  const head = normalizeModel(preferredModel);
-  const ordered = head ? [head, ...DEFAULT_CASCADE.filter((m) => m !== head)] : DEFAULT_CASCADE;
+  const head = routeModel(preferredModel);
+  // 省錢模型忙線時，先換另一個便宜的，最後才用主力
+  const cascade = head === BG_MODEL ? [...new Set([BG_MODEL, 'gemini-3.1-flash-lite', MAIN_MODEL])] : DEFAULT_CASCADE;
+  const ordered = head ? [head, ...cascade.filter((m) => m !== head)] : cascade;
   const available = ordered.filter((m) => !missingModels.has(m));
   const now = Date.now();
   const ready = available.filter((m) => (coolingUntil.get(m) ?? 0) <= now);
@@ -1211,7 +1240,7 @@ function buildSystemPrompt(
     時間: timeLine,
     長期檔案: memoryContext,
     忙碌: busy.describeForChat(),
-    話頭: threads.describeForChat(),
+    話頭: threads.describeForChat(Date.now(), undefined, String(recentText || '').split('\n').pop() || ''),
     以前聊過: recall.describeForChat(String(recentText || '').split('\n').pop() || ''),
     往事: eventContext ? `${eventContext}\n（以上是你記得的主人往事。只能根據這些內容提起往事，不要捏造沒發生過的事。）` : '',
     Gemini網頁: describeGeminiWeb(geminiWebStore),
@@ -1811,6 +1840,10 @@ app.post('/api/vision-track', async (req: Request, res: Response) => {
 
     if (!screenshot) {
       return res.status(400).json({ error: 'Screenshot is required' });
+    }
+    // 11/21：到了每月／全天總上限，自動看畫面先暫停（主人手動按的照看，會用省錢模型）
+    if (!manual && usage.capState().capped) {
+      return res.json({ skipped: true, reason: usage.capState().reason === 'month' ? '這個月的額度到上限了，看畫面先暫停' : '今天的額度到上限了，看畫面先暫停' });
     }
     // 自動的螢幕搭話先問閘門（主人手動按「立即看畫面」或貼圖不擋）；被擋就不叫 Gemini，不花額度
     if (!manual) {

@@ -18,6 +18,7 @@ import { setLiveFrameGetter } from '../liveFrame';
 const GAME_COOLDOWN_KEY = 'gemini_twin_cat_game_cooldown';
 const LIVE_MODE_KEY = 'gemini_twin_cat_live_commentary';
 const SCREEN_COOLDOWN_KEY = 'gemini_twin_cat_screen_cooldown';
+const VISION_V2_KEY = 'gemini_twin_cat_vision_v2';
 /** 實況模式生效的畫面：遊戲、影片（11/10） */
 const isLiveActivity = (a: ScreenActivity | null) => isGamingActivity(a) || a?.category === 'video';
 const isGamingActivity = (a: ScreenActivity | null) =>
@@ -92,11 +93,17 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
   const [lastUsedModel, setLastUsedModel] = useState<string | null>(null);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   // 一般畫面多久最多聊一次（11/10：記住設定，以前每次重開都回到 5 分鐘）
+  // 11/21 主人（省額度）：預設改成一般 10 分鐘、遊戲 5 分鐘；以前存的是舊預設（5 分鐘／2 分鐘以下）就跟著改一次
   const [cooldownSec, setCooldownSec] = useState<number>(() => {
     try {
-      return Number(localStorage.getItem(SCREEN_COOLDOWN_KEY)) || 300;
+      if (!localStorage.getItem(VISION_V2_KEY)) {
+        localStorage.setItem(VISION_V2_KEY, '1');
+        if ((Number(localStorage.getItem(SCREEN_COOLDOWN_KEY)) || 300) <= 300) localStorage.setItem(SCREEN_COOLDOWN_KEY, '600');
+        if ((Number(localStorage.getItem(GAME_COOLDOWN_KEY)) || 120) <= 120) localStorage.setItem(GAME_COOLDOWN_KEY, '300');
+      }
+      return Number(localStorage.getItem(SCREEN_COOLDOWN_KEY)) || 600;
     } catch {
-      return 300;
+      return 600;
     }
   });
   useEffect(() => {
@@ -106,13 +113,13 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
       // ignore
     }
   }, [cooldownSec]);
-  const cooldownRef = useRef({ normal: cooldownSec, game: 120 });
+  const cooldownRef = useRef({ normal: cooldownSec, game: 300 });
   // 打遊戲時當遊戲夥伴：聊得比較勤（預設 2 分鐘），可以另外設定
   const [gameCooldownSec, setGameCooldownSec] = useState<number>(() => {
     try {
-      return Number(localStorage.getItem(GAME_COOLDOWN_KEY)) || 120;
+      return Number(localStorage.getItem(GAME_COOLDOWN_KEY)) || 300;
     } catch {
-      return 120;
+      return 300;
     }
   });
   const [isGamingNow, setIsGamingNow] = useState(false);
@@ -941,6 +948,7 @@ export const ScreenVisionTracker: React.FC<ScreenVisionTrackerProps> = ({
             >
               <option value={60}>🎮 遊戲：每 1 分鐘</option>
               <option value={120}>🎮 遊戲：每 2 分鐘</option>
+              <option value={180}>🎮 遊戲：每 3 分鐘</option>
               <option value={300}>🎮 遊戲：每 5 分鐘</option>
             </select>
             <select
