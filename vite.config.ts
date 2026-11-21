@@ -25,7 +25,7 @@ export default defineConfig(() => {
       // 不監看 TTS/（上萬個 Python 檔），減少 CPU 與記憶體占用
       // 11/10：也不監看工作桌、logs（工坊寫檔案會讓桌寵畫面整頁重新載入，打遊戲時會頓一下）
       watch:
-        process.env.DISABLE_HMR === 'true' ? null : { ignored: ['**/TTS/**', '**/data/**', '**/西雅的工作桌/**', '**/logs/**', '**/voice-files/**', '**/scripts/**'] },
+        process.env.DISABLE_HMR === 'true' ? null : { ignored: ['**/TTS/**', '**/data/**', '**/西雅的工作桌/**', '**/logs/**', '**/voice-files/**', '**/scripts/**', '**/.tmp.driveupload/**', '**/.tmp.drivedownload/**'] },
     },
   };
 });

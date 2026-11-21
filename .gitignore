@@ -41,3 +41,7 @@ server - 備份.ts
 # 人格包（11/15）：自己的桌寵（例如西雅）只留在這台電腦；只上傳範本
 persona/*
 !persona/_template/
+
+# Google 雲端硬碟電腦版備份這個資料夾時的暫存（11/21：會讓畫面一直重新整理、可能有好幾 GB，絕對不要提交）
+.tmp.driveupload/
+.tmp.drivedownload/
