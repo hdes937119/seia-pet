@@ -129,7 +129,9 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
     const v = Number(process.env[k]);
     return Number.isFinite(v) && v > 0 ? v : d;
   };
-  const monthlyCapTwd = () => envNum('MONTHLY_BUDGET_TWD', 620);
+  // 11/22 主人：11 月已經超過，這個月先不設每月上限（只靠全天總上限），從 MONTHLY_BUDGET_FROM（預設 2026-12）開始算
+  const monthlyCapActive = (ms = Date.now()) => dayKey(ms).slice(0, 7) >= (process.env.MONTHLY_BUDGET_FROM || '2026-12');
+  const monthlyCapTwd = (ms = Date.now()) => (monthlyCapActive(ms) ? envNum('MONTHLY_BUDGET_TWD', 620) : Infinity);
   const dailyTotalCapTwd = () => envNum('DAILY_TOTAL_BUDGET_TWD', 22);
   const budgetTwd = () => savedBudget ?? envBudget();
   /** 設定每日預算（null＝清掉，回到 .env 或預設） */
@@ -218,15 +220,16 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
   function capState(ms = Date.now()): { capped: boolean; reason: 'month' | 'day' | null; monthTwd: number; monthCapTwd: number; todayTwd: number; dayCapTwd: number } {
     const monthTwd = monthCostTwd(ms);
     const todayTwd = todayCostTwd(ms);
-    const reason = monthTwd >= monthlyCapTwd() ? 'month' : todayTwd >= dailyTotalCapTwd() ? 'day' : null;
-    const k = `${dayKey(ms)}|${reason || (monthTwd >= monthlyCapTwd() * 0.8 ? 'warn' : '')}`;
-    if (capWarned !== k && (reason || monthTwd >= monthlyCapTwd() * 0.8)) {
+    const mcap = monthlyCapTwd(ms);
+    const reason = monthTwd >= mcap ? 'month' : todayTwd >= dailyTotalCapTwd() ? 'day' : null;
+    const k = `${dayKey(ms)}|${reason || (monthTwd >= mcap * 0.8 ? 'warn' : '')}`;
+    if (capWarned !== k && (reason || monthTwd >= mcap * 0.8)) {
       capWarned = k;
       if (reason === 'month') log(`[用量] ⚠️ 這個月已經花了約 NT$${monthTwd.toFixed(0)}，到每月上限 NT$${monthlyCapTwd()}：背景和看螢幕暫停，聊天改用省錢模型，到下個月恢復`);
       else if (reason === 'day') log(`[用量] 今天全部加起來約 NT$${todayTwd.toFixed(1)}，到全天上限 NT$${dailyTotalCapTwd()}：背景和看螢幕暫停，聊天改用省錢模型，明天恢復`);
       else log(`[用量] 提醒：這個月已經花了約 NT$${monthTwd.toFixed(0)}，是每月上限 NT$${monthlyCapTwd()} 的 ${Math.round((monthTwd / monthlyCapTwd()) * 100)}%`);
     }
-    return { capped: Boolean(reason), reason, monthTwd, monthCapTwd: monthlyCapTwd(), todayTwd, dayCapTwd: dailyTotalCapTwd() };
+    return { capped: Boolean(reason), reason, monthTwd, monthCapTwd: Number.isFinite(mcap) ? mcap : 0, todayTwd, dayCapTwd: dailyTotalCapTwd() };
   }
 
   let warnedDate = '';
@@ -279,7 +282,7 @@ export function createUsage(dataDir: string, log: (m: string) => void = console.
     return {
       date: dayKey(ms),
       budgetTwd: budgetTwd(),
-      monthBudgetTwd: monthlyCapTwd(),
+      monthBudgetTwd: Number.isFinite(monthlyCapTwd(ms)) ? monthlyCapTwd(ms) : undefined,
       dayTotalBudgetTwd: dailyTotalCapTwd(),
       capped: capState(ms).reason,
       todayTwd: Math.round(todayCostTwd(ms) * 100) / 100,
