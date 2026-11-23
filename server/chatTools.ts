@@ -110,6 +110,29 @@ export const CHAT_TOOL_DECLS = [
       required: ['action', 'path'],
     },
   },
+  // 11/24：她的說明書＋查自己（server/selfManual.ts）
+  {
+    name: 'my_manual',
+    description:
+      '翻你自己的說明書（data/SELF.md：你是怎麼運作的——腦袋用什麼模型、天氣地點怎麼來、聲音、眼睛、記憶放哪、你的手能做什麼…）。主人問到你自己的事（你能不能做某件事、為什麼你會這樣、你的某個設定），你不確定時先翻這裡。query＝關鍵字（只看有提到的段落），不填＝全部。',
+    parametersJsonSchema: { type: 'object', properties: { query: { type: 'string' } } },
+  },
+  {
+    name: 'inspect_self',
+    description:
+      '說明書沒寫、或寫得不夠清楚時，在你自己的程式裡查（唯讀，會花一點額度，大約幾毛到一兩元）：例如「我的天氣地點是怎麼決定的？」「我能不能自己設提醒？」。question＝你想弄清楚的事。查完會告訴你在哪個檔案、怎麼運作、要改的話大概改哪裡；你再跟主人說，需要改就問主人要不要用 workshop_task 的 program 改。',
+    parametersJsonSchema: { type: 'object', properties: { question: { type: 'string' } }, required: ['question'] },
+  },
+  {
+    name: 'update_manual',
+    description:
+      '改你自己的說明書：查到新的事、發現寫錯了、你的程式被改了，就把那一段更新。section＝段落標題（沒有這段就新增），text＝新的內容（幾行就好，附上檔名），mode＝replace（整段改寫，預設）或 append（接在後面）。',
+    parametersJsonSchema: {
+      type: 'object',
+      properties: { section: { type: 'string' }, text: { type: 'string' }, mode: { type: 'string', enum: ['replace', 'append'] } },
+      required: ['section', 'text'],
+    },
+  },
   {
     name: 'my_desk',
     description:
